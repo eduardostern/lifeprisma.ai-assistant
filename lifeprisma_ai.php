@@ -489,10 +489,17 @@ class lifeprisma_ai extends rcube_plugin
         header('Connection: keep-alive');
         header('X-Accel-Buffering: no');
 
+        // Close session early — prevents session lock during streaming
+        session_write_close();
+
         // Disable output buffering
         while (ob_get_level()) {
             ob_end_flush();
         }
+
+        // Send initial SSE comment to prime the connection and flush nginx buffers
+        echo ": stream start\n\n";
+        flush();
 
         $ch = curl_init($api_url);
 
