@@ -123,9 +123,30 @@ function lpai_md_to_html(text) {
     html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul style="margin:4px 0;padding-left:20px">$1</ul>');
     html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
     html = html.replace(/^---+$/gm, '<hr style="border:none;border-top:1px solid #e2e8f0;margin:8px 0">');
+    // Markdown tables
+    html = html.replace(/((?:^\|.+\|$\n?)+)/gm, function(table) {
+        var rows = table.trim().split('\n');
+        var out = '<table style="border-collapse:collapse;width:100%;margin:8px 0;font-size:13px">';
+        var isHeader = true;
+        for (var r = 0; r < rows.length; r++) {
+            var row = rows[r].trim();
+            if (/^\|[\s\-:|]+\|$/.test(row)) { isHeader = false; continue; }
+            var cells = row.split('|').filter(function(c, i, a) { return i > 0 && i < a.length - 1; });
+            var tag = isHeader ? 'th' : 'td';
+            var bgStyle = isHeader ? 'background:#f4f4f4;font-weight:600;' : '';
+            out += '<tr>';
+            for (var c = 0; c < cells.length; c++) {
+                out += '<' + tag + ' style="' + bgStyle + 'border:1px solid #ddd;padding:4px 8px;text-align:left">' + cells[c].trim() + '</' + tag + '>';
+            }
+            out += '</tr>';
+            if (isHeader) isHeader = false;
+        }
+        out += '</table>';
+        return out;
+    });
     html = html.replace(/\n/g, '<br>');
-    html = html.replace(/<\/(ul|pre|hr)><br>/g, '</$1>');
-    html = html.replace(/<br><(ul|pre)/g, '<$1');
+    html = html.replace(/<\/(ul|pre|hr|table)><br>/g, '</$1>');
+    html = html.replace(/<br><(ul|pre|table)/g, '<$1');
     return html;
 }
 
