@@ -497,10 +497,6 @@ class lifeprisma_ai extends rcube_plugin
             ob_end_flush();
         }
 
-        // Send a "thinking" event so the client knows we're processing
-        echo "data: " . json_encode(['type' => 'status', 'message' => 'Connecting to AI...']) . "\n\n";
-        flush();
-
         $ch = curl_init($api_url);
 
         $headers = ['Content-Type: application/json'];
