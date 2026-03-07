@@ -1000,10 +1000,15 @@ function lpai_update_context_preview() {
 function lpai_save_as_draft() {
     if (!lpai_last_result) return;
 
+    // Only works in compose view
+    if (rcmail.env.action !== 'compose') {
+        rcmail.display_message('Save Draft is only available in compose view', 'notice');
+        return;
+    }
+
     // Apply content to editor
     lpai_undo_text = lpai_get_editor_content();
     lpai_set_editor_content(lpai_last_result);
-    lpai_close_panel();
 
     setTimeout(function() {
         // Sync TinyMCE content to the textarea
@@ -1013,24 +1018,12 @@ function lpai_save_as_draft() {
         // Invalidate compose hash so Roundcube sees a change
         rcmail.cmp_hash = null;
 
-        // Try rcmail.command first, but check if it's enabled
-        if (rcmail.commands && rcmail.commands['savedraft']) {
+        lpai_close_panel();
+
+        setTimeout(function() {
             rcmail.command('savedraft');
-        } else {
-            // Fallback: directly submit the compose form as draft
-            var form = rcmail.gui_objects.messageform;
-            if (form && form._draft) {
-                form._draft.value = '1';
-                var msgid = rcmail.set_busy(true, 'savingmessage');
-                form.target = rcmail.get_save_target(msgid);
-                form.action = rcmail.add_url(form.action, '_unlock', msgid);
-                form.action = rcmail.add_url(form.action, '_framed', 1);
-                form.submit();
-            } else {
-                rcmail.display_message('Could not save draft — compose form not found', 'warning');
-            }
-        }
-    }, 500);
+        }, 300);
+    }, 300);
 }
 
 // ========================================
