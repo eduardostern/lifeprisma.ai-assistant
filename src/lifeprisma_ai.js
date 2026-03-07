@@ -1000,24 +1000,35 @@ function lpai_update_context_preview() {
 function lpai_save_as_draft() {
     if (!lpai_last_result) return;
 
+    // Apply content to editor
     lpai_undo_text = lpai_get_editor_content();
     lpai_set_editor_content(lpai_last_result);
     lpai_close_panel();
 
     setTimeout(function() {
-        // Sync TinyMCE to textarea
+        // Sync TinyMCE content to the textarea
         var editor = window.tinyMCE && tinyMCE.activeEditor;
         if (editor) editor.save();
 
-        // Invalidate Roundcube's compose hash so it detects the change
-        if (rcmail.cmp_hash) rcmail.cmp_hash = null;
+        // Invalidate compose hash so Roundcube sees a change
+        rcmail.cmp_hash = null;
 
-        // Trigger draft save
-        if (rcmail.env.drafts_mailbox) {
+        // Try rcmail.command first, but check if it's enabled
+        if (rcmail.commands && rcmail.commands['savedraft']) {
             rcmail.command('savedraft');
-            if (rcmail.display_message) rcmail.display_message('GenIA content saved as draft', 'confirmation');
         } else {
-            if (rcmail.display_message) rcmail.display_message('Drafts folder not configured', 'warning');
+            // Fallback: directly submit the compose form as draft
+            var form = rcmail.gui_objects.messageform;
+            if (form && form._draft) {
+                form._draft.value = '1';
+                var msgid = rcmail.set_busy(true, 'savingmessage');
+                form.target = rcmail.get_save_target(msgid);
+                form.action = rcmail.add_url(form.action, '_unlock', msgid);
+                form.action = rcmail.add_url(form.action, '_framed', 1);
+                form.submit();
+            } else {
+                rcmail.display_message('Could not save draft — compose form not found', 'warning');
+            }
         }
     }, 500);
 }
