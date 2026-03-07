@@ -1574,16 +1574,21 @@ function lpai_submit() {
 
                         if (['summarize', 'scam', 'suggest_subject', 'thread_summarize'].indexOf(lpai_current_action) < 0) {
                             if (applyBtn) applyBtn.style.display = '';
-                            var draftBtn = document.getElementById('lpai-draft');
-                            if (draftBtn) draftBtn.style.display = '';
+                            if (rcmail.env.action === 'compose') {
+                                var draftBtn = document.getElementById('lpai-draft');
+                                if (draftBtn) draftBtn.style.display = '';
+                            }
                         }
 
-                        // Auto-save draft if preference enabled
+                        // Auto-save draft if preference enabled (compose view only)
                         var sp = rcmail.env.lpai_user_prefs || {};
-                        if (sp.auto_draft && ['summarize', 'scam', 'suggest_subject', 'thread_summarize'].indexOf(lpai_current_action) < 0) {
+                        if (sp.auto_draft && rcmail.env.action === 'compose' && ['summarize', 'scam', 'suggest_subject', 'thread_summarize'].indexOf(lpai_current_action) < 0) {
                             lpai_undo_text = lpai_get_editor_content();
                             lpai_set_editor_content(fullText);
-                            setTimeout(function() { if (rcmail.command) rcmail.command('savedraft'); }, 300);
+                            var editor = window.tinyMCE && tinyMCE.activeEditor;
+                            if (editor) editor.save();
+                            rcmail.cmp_hash = null;
+                            setTimeout(function() { rcmail.command('savedraft'); }, 500);
                         }
 
                         // Show follow-up hint
@@ -1688,8 +1693,10 @@ function lpai_submit_fallback(postData) {
                 if (copyBtn) copyBtn.style.display = '';
                 if (['summarize', 'scam', 'suggest_subject', 'thread_summarize'].indexOf(lpai_current_action) < 0) {
                     if (applyBtn) applyBtn.style.display = '';
-                    var draftBtn = document.getElementById('lpai-draft');
-                    if (draftBtn) draftBtn.style.display = '';
+                    if (rcmail.env.action === 'compose') {
+                        var draftBtn = document.getElementById('lpai-draft');
+                        if (draftBtn) draftBtn.style.display = '';
+                    }
                 }
             } else {
                 var msg = data.message || 'An error occurred';
