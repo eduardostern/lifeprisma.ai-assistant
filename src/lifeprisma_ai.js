@@ -1002,12 +1002,35 @@ function lpai_save_as_draft() {
 
     lpai_undo_text = lpai_get_editor_content();
     lpai_set_editor_content(lpai_last_result);
-    lpai_close_panel();
 
-    setTimeout(function() {
-        if (rcmail.command) rcmail.command('savedraft');
-        if (rcmail.display_message) rcmail.display_message('GenIA content saved as draft', 'confirmation');
-    }, 300);
+    // Wait for TinyMCE to fully process the content before saving
+    var attempts = 0;
+    var checkAndSave = function() {
+        attempts++;
+        var editor = window.tinyMCE && tinyMCE.activeEditor;
+        var content = '';
+        if (editor) {
+            content = editor.getContent({ format: 'text' }).trim();
+        } else {
+            var ta = document.getElementById('composebody') || document.querySelector('textarea[name="_message"]');
+            if (ta) content = ta.value.trim();
+        }
+
+        if (content.length > 0 || attempts > 10) {
+            // TinyMCE needs the content synced to the textarea for savedraft
+            if (editor) editor.save();
+            lpai_close_panel();
+            setTimeout(function() {
+                try {
+                    rcmail.command('savedraft');
+                } catch (e) {}
+                if (rcmail.display_message) rcmail.display_message('GenIA content saved as draft', 'confirmation');
+            }, 200);
+        } else {
+            setTimeout(checkAndSave, 100);
+        }
+    };
+    setTimeout(checkAndSave, 100);
 }
 
 // ========================================
