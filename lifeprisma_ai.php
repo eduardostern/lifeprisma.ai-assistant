@@ -14,6 +14,8 @@ class lifeprisma_ai extends rcube_plugin
         $this->register_action('plugin.lifeprisma_ai_request', [$this, 'handle_request']);
         $this->register_action('plugin.lifeprisma_ai_stream', [$this, 'handle_stream']);
         $this->register_action('plugin.lifeprisma_ai_templates', [$this, 'handle_templates']);
+        $this->register_action('plugin.lifeprisma_ai_admin', [$this, 'handle_admin']);
+        $this->register_action('plugin.lifeprisma_ai_admin_save', [$this, 'handle_admin_save']);
 
         $this->add_hook('render_page', [$this, 'render_page']);
         $this->add_hook('preferences_sections_list', [$this, 'preferences_sections']);
@@ -26,8 +28,8 @@ class lifeprisma_ai extends rcube_plugin
         if ($args['template'] === 'compose' || $args['template'] === 'message') {
             $rcmail = rcmail::get_instance();
 
-            // Pass provider list to JS (without API keys, only configured ones)
-            $providers = $this->get_providers();
+            // Use admin-configured providers if available
+            $providers = $this->get_providers_with_admin();
             $js_providers = [];
             foreach ($providers as $id => $p) {
                 $ptype = $p['api_type'] ?? 'responses';
@@ -50,9 +52,57 @@ class lifeprisma_ai extends rcube_plugin
                 'auto_draft' => $prefs['genia_auto_draft'] ?? 0,
             ]);
 
+            // Pass enabled features to JS
+            $features = $this->get_enabled_features();
+            if ($features) {
+                $rcmail->output->set_env('lpai_features', $features);
+            }
+
+            // Pass admin status to JS
+            $rcmail->output->set_env('lpai_is_admin', $this->is_admin());
+
+            // Pass attachment info for compose view
+            if ($args['template'] === 'message') {
+                $uid = rcube_utils::get_input_string('_uid', rcube_utils::INPUT_GET);
+                $mbox = rcube_utils::get_input_string('_mbox', rcube_utils::INPUT_GET);
+                if ($uid) {
+                    $attachments = $this->get_attachment_info((int) $uid, $mbox);
+                    if ($attachments) {
+                        $rcmail->output->set_env('lpai_attachments', $attachments);
+                    }
+                }
+            }
+
             $rcmail->output->add_footer($this->get_ai_panel_html($js_providers));
         }
         return $args;
+    }
+
+    /**
+     * Get attachment info from IMAP message
+     */
+    private function get_attachment_info($uid, $mbox = '')
+    {
+        try {
+            $rcmail = rcmail::get_instance();
+            $storage = $rcmail->get_storage();
+            if (!empty($mbox)) $storage->set_folder($mbox);
+
+            $msg = new rcube_message($uid);
+            if (empty($msg->headers) || empty($msg->attachments)) return [];
+
+            $attachments = [];
+            foreach ($msg->attachments as $part) {
+                $attachments[] = [
+                    'name' => $part->filename ?: ('part-' . $part->mime_id),
+                    'type' => $part->mimetype,
+                    'size' => $part->size,
+                ];
+            }
+            return $attachments;
+        } catch (\Exception $e) {
+            return [];
+        }
     }
 
     /**
@@ -84,11 +134,11 @@ class lifeprisma_ai extends rcube_plugin
     }
 
     /**
-     * Resolve provider config by ID
+     * Resolve provider config by ID (checks admin config first)
      */
     private function get_provider_config($provider_id = '')
     {
-        $providers = $this->get_providers();
+        $providers = $this->get_providers_with_admin();
 
         if (!empty($provider_id) && isset($providers[$provider_id])) {
             return $providers[$provider_id];
@@ -226,11 +276,20 @@ class lifeprisma_ai extends rcube_plugin
             'id' => 'genia',
             'section' => 'GenIA AI Assistant',
         ];
+        if ($this->is_admin()) {
+            $args['list']['genia_admin'] = [
+                'id' => 'genia_admin',
+                'section' => 'GenIA Admin Panel',
+            ];
+        }
         return $args;
     }
 
     public function preferences_list($args)
     {
+        if ($args['section'] === 'genia_admin') {
+            return $this->admin_preferences_list($args);
+        }
         if ($args['section'] !== 'genia') return $args;
 
         $rcmail = rcmail::get_instance();
@@ -270,6 +329,10 @@ class lifeprisma_ai extends rcube_plugin
 
     public function preferences_save($args)
     {
+        if ($args['section'] === 'genia_admin') {
+            // Admin saves are handled via AJAX, not form submit
+            return $args;
+        }
         if ($args['section'] !== 'genia') return $args;
 
         $args['prefs']['genia_language'] = rcube_utils::get_input_string('_genia_language', rcube_utils::INPUT_POST);
@@ -277,6 +340,257 @@ class lifeprisma_ai extends rcube_plugin
         $args['prefs']['genia_auto_draft'] = rcube_utils::get_input_string('_genia_auto_draft', rcube_utils::INPUT_POST) ? 1 : 0;
 
         return $args;
+    }
+
+    private function admin_preferences_list($args)
+    {
+        if (!$this->is_admin()) return $args;
+
+        $args['blocks']['genia_admin_panel'] = [
+            'name' => 'GenIA Administration',
+            'options' => [
+                'genia_admin_app' => [
+                    'title' => '',
+                    'content' => '<div id="lpai-admin-root" data-url-config="' . htmlspecialchars(rcmail::get_instance()->url('plugin.lifeprisma_ai_admin')) . '" data-url-save="' . htmlspecialchars(rcmail::get_instance()->url('plugin.lifeprisma_ai_admin_save')) . '" data-token="' . htmlspecialchars(rcmail::get_instance()->get_request_token()) . '"></div>' .
+                    '<script>if(window.lpai_init_admin)lpai_init_admin();</script>',
+                ],
+            ],
+        ];
+
+        return $args;
+    }
+
+    /**
+     * Check if current user is an admin
+     */
+    private function is_admin()
+    {
+        $rcmail = rcmail::get_instance();
+        $admins = $rcmail->config->get('lifeprisma_ai_admins', []);
+        if (empty($admins)) return false;
+        $identity = $rcmail->user->get_identity();
+        $email = $identity['email'] ?? '';
+        $username = $rcmail->user->get_username();
+        return in_array($email, $admins) || in_array($username, $admins);
+    }
+
+    /**
+     * Admin page — render or API
+     */
+    public function handle_admin()
+    {
+        if (!$this->is_admin()) {
+            header('Content-Type: application/json');
+            echo json_encode(['status' => 'error', 'message' => 'Access denied']);
+            exit;
+        }
+
+        $rcmail = rcmail::get_instance();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $op = rcube_utils::get_input_string('op', rcube_utils::INPUT_POST) ?: rcube_utils::get_input_string('op', rcube_utils::INPUT_GET);
+
+        if ($op === 'get_config') {
+            // Return current admin settings from DB prefs (not file config)
+            $db_config = $this->get_admin_config();
+            $file_providers = $rcmail->config->get('lifeprisma_ai_providers', []);
+
+            // Merge: DB overrides take priority
+            $providers = $db_config['providers'] ?? $file_providers;
+
+            // Mask API keys for display
+            $masked = [];
+            foreach ($providers as $id => $p) {
+                $key = $p['api_key'] ?? '';
+                $masked[$id] = $p;
+                $masked[$id]['api_key_masked'] = $key ? (substr($key, 0, 8) . '...' . substr($key, -4)) : '';
+                $masked[$id]['has_key'] = !empty($key);
+            }
+
+            echo json_encode([
+                'status' => 'success',
+                'providers' => $masked,
+                'settings' => [
+                    'max_tokens' => $db_config['max_tokens'] ?? $rcmail->config->get('lifeprisma_ai_max_tokens', 2000),
+                    'temperature' => $db_config['temperature'] ?? $rcmail->config->get('lifeprisma_ai_temperature', 0.5),
+                    'rate_limit' => $db_config['rate_limit'] ?? $rcmail->config->get('lifeprisma_ai_rate_limit', 3),
+                    'default_language' => $db_config['default_language'] ?? $rcmail->config->get('lifeprisma_ai_default_language', 'English'),
+                ],
+                'features' => $db_config['features'] ?? [
+                    'compose' => true, 'rewrite' => true, 'reply' => true,
+                    'translate' => true, 'summarize' => true, 'fix' => true,
+                    'scam' => true, 'suggest_subject' => true, 'thread_summarize' => true,
+                    'snippet_extract' => true,
+                ],
+                'usage' => $this->get_usage_stats(),
+            ]);
+            exit;
+        }
+
+        if ($op === 'get_users') {
+            echo json_encode([
+                'status' => 'success',
+                'users' => $this->get_user_usage(),
+            ]);
+            exit;
+        }
+
+        echo json_encode(['status' => 'error', 'message' => 'Invalid operation']);
+        exit;
+    }
+
+    public function handle_admin_save()
+    {
+        if (!$this->is_admin()) {
+            header('Content-Type: application/json');
+            echo json_encode(['status' => 'error', 'message' => 'Access denied']);
+            exit;
+        }
+
+        $rcmail = rcmail::get_instance();
+        header('Content-Type: application/json; charset=utf-8');
+
+        $raw = file_get_contents('php://input');
+        $data = json_decode($raw, true);
+        if (!$data) {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid JSON']);
+            exit;
+        }
+
+        $config = $this->get_admin_config();
+
+        if (isset($data['providers'])) {
+            // Merge API keys — if masked/empty, keep existing
+            $existing = $config['providers'] ?? $rcmail->config->get('lifeprisma_ai_providers', []);
+            foreach ($data['providers'] as $id => &$p) {
+                if (empty($p['api_key']) && isset($existing[$id])) {
+                    $p['api_key'] = $existing[$id]['api_key'] ?? '';
+                }
+            }
+            unset($p);
+            $config['providers'] = $data['providers'];
+        }
+
+        if (isset($data['settings'])) {
+            $s = $data['settings'];
+            if (isset($s['max_tokens'])) $config['max_tokens'] = (int) $s['max_tokens'];
+            if (isset($s['temperature'])) $config['temperature'] = (float) $s['temperature'];
+            if (isset($s['rate_limit'])) $config['rate_limit'] = (int) $s['rate_limit'];
+            if (isset($s['default_language'])) $config['default_language'] = $s['default_language'];
+        }
+
+        if (isset($data['features'])) {
+            $config['features'] = $data['features'];
+        }
+
+        $this->save_admin_config($config);
+
+        echo json_encode(['status' => 'success', 'message' => 'Settings saved']);
+        exit;
+    }
+
+    /**
+     * Admin config stored in DB via a special system preference key
+     */
+    private function get_admin_config()
+    {
+        $rcmail = rcmail::get_instance();
+        $db = $rcmail->get_dbh();
+        $result = $db->query("SELECT preferences FROM users WHERE username = ?", '__genia_admin__');
+        $row = $db->fetch_assoc($result);
+        if ($row && !empty($row['preferences'])) {
+            $data = unserialize($row['preferences']);
+            return $data['genia_admin'] ?? [];
+        }
+        return [];
+    }
+
+    private function save_admin_config($config)
+    {
+        $rcmail = rcmail::get_instance();
+        $db = $rcmail->get_dbh();
+
+        $result = $db->query("SELECT user_id FROM users WHERE username = ?", '__genia_admin__');
+        $row = $db->fetch_assoc($result);
+
+        $prefs = serialize(['genia_admin' => $config]);
+
+        if ($row) {
+            $db->query("UPDATE users SET preferences = ? WHERE username = ?", $prefs, '__genia_admin__');
+        } else {
+            $db->query("INSERT INTO users (username, mail_host, preferences, created) VALUES (?, ?, ?, now())",
+                '__genia_admin__', 'localhost', $prefs);
+        }
+    }
+
+    /**
+     * Get usage stats for admin dashboard
+     */
+    private function get_usage_stats()
+    {
+        $rcmail = rcmail::get_instance();
+        $db = $rcmail->get_dbh();
+
+        $result = $db->query(
+            "SELECT COUNT(*) as total_users FROM users WHERE username != '__genia_admin__'"
+        );
+        $row = $db->fetch_assoc($result);
+        $total_users = $row['total_users'] ?? 0;
+
+        // Count users who have GenIA preferences set (active users)
+        $result = $db->query(
+            "SELECT COUNT(*) as active_users FROM users WHERE username != '__genia_admin__' AND preferences LIKE '%genia_%'"
+        );
+        $row = $db->fetch_assoc($result);
+        $active_users = $row['active_users'] ?? 0;
+
+        return [
+            'total_users' => (int) $total_users,
+            'active_users' => (int) $active_users,
+        ];
+    }
+
+    private function get_user_usage()
+    {
+        $rcmail = rcmail::get_instance();
+        $db = $rcmail->get_dbh();
+
+        $result = $db->query(
+            "SELECT username, preferences FROM users WHERE username != '__genia_admin__' AND preferences LIKE '%genia_%' ORDER BY username LIMIT 100"
+        );
+
+        $users = [];
+        while ($row = $db->fetch_assoc($result)) {
+            $prefs = unserialize($row['preferences']);
+            $users[] = [
+                'username' => $row['username'],
+                'language' => $prefs['genia_language'] ?? 'default',
+                'tone' => $prefs['genia_tone'] ?? 'default',
+                'templates' => count($prefs['genia_templates'] ?? []),
+            ];
+        }
+        return $users;
+    }
+
+    /**
+     * Override get_providers to check DB admin config first
+     */
+    private function get_providers_with_admin()
+    {
+        $admin_config = $this->get_admin_config();
+        if (!empty($admin_config['providers'])) {
+            return $admin_config['providers'];
+        }
+        return $this->get_providers();
+    }
+
+    /**
+     * Get enabled features from admin config
+     */
+    private function get_enabled_features()
+    {
+        $admin_config = $this->get_admin_config();
+        return $admin_config['features'] ?? null;
     }
 
     /**
@@ -425,8 +739,23 @@ class lifeprisma_ai extends rcube_plugin
             $sender_name = $user_identity;
         }
 
+        // Get attachment info from POST
+        $attachments_json = rcube_utils::get_input_string('attachments', rcube_utils::INPUT_POST);
+        $attachments_text = '';
+        if (!empty($attachments_json)) {
+            $atts = json_decode($attachments_json, true);
+            if (is_array($atts) && count($atts) > 0) {
+                $parts = [];
+                foreach ($atts as $a) {
+                    $size = isset($a['size']) ? round($a['size'] / 1024, 1) . 'KB' : '';
+                    $parts[] = ($a['name'] ?? 'unknown') . ' (' . ($a['type'] ?? '') . ($size ? ", {$size}" : '') . ')';
+                }
+                $attachments_text = "Attachments: " . implode(', ', $parts);
+            }
+        }
+
         $system_prompt = $this->build_system_prompt($action);
-        $user_prompt = $this->build_user_prompt($action, $instruction, $email_body, $reply_text, $subject, $language, $tone, $sender_name, $raw_headers, $original_sender);
+        $user_prompt = $this->build_user_prompt($action, $instruction, $email_body, $reply_text, $subject, $language, $tone, $sender_name, $raw_headers, $original_sender, $attachments_text);
 
         // Build messages/input with conversation history
         $input = [];
@@ -690,8 +1019,22 @@ class lifeprisma_ai extends rcube_plugin
             $sender_name = $user_identity;
         }
 
+        $attachments_json = rcube_utils::get_input_string('attachments', rcube_utils::INPUT_POST);
+        $attachments_text = '';
+        if (!empty($attachments_json)) {
+            $atts = json_decode($attachments_json, true);
+            if (is_array($atts) && count($atts) > 0) {
+                $parts = [];
+                foreach ($atts as $a) {
+                    $size = isset($a['size']) ? round($a['size'] / 1024, 1) . 'KB' : '';
+                    $parts[] = ($a['name'] ?? 'unknown') . ' (' . ($a['type'] ?? '') . ($size ? ", {$size}" : '') . ')';
+                }
+                $attachments_text = "Attachments: " . implode(', ', $parts);
+            }
+        }
+
         $system_prompt = $this->build_system_prompt($action);
-        $user_prompt = $this->build_user_prompt($action, $instruction, $email_body, $reply_text, $subject, $language, $tone, $sender_name, $raw_headers, $original_sender);
+        $user_prompt = $this->build_user_prompt($action, $instruction, $email_body, $reply_text, $subject, $language, $tone, $sender_name, $raw_headers, $original_sender, $attachments_text);
 
         $supports_reasoning = $provider['supports_reasoning'] ?? ($api_type === 'responses');
 
@@ -918,6 +1261,35 @@ class lifeprisma_ai extends rcube_plugin
                 "Structure: Overview, Key Points, Action Items, Current Status.";
         }
 
+        if ($action === 'extract_actions') {
+            return "You are an expert at extracting action items from emails. " .
+                "Extract ALL action items, tasks, requests, and things that need to be done. " .
+                "For each item, note who is responsible (if mentioned) and any deadline. " .
+                "Use markdown formatting with checkboxes (- [ ] item). Be thorough.";
+        }
+
+        if ($action === 'extract_dates') {
+            return "You are an expert at extracting dates, deadlines, and time-sensitive information from emails. " .
+                "Extract ALL dates, deadlines, meetings, appointments, and time references. " .
+                "Format as a clear list with the date/time and what it refers to. " .
+                "Use markdown formatting. Sort chronologically.";
+        }
+
+        if ($action === 'extract_contacts') {
+            return "You are an expert at extracting contact information from emails. " .
+                "Extract ALL names, email addresses, phone numbers, companies, titles, and any other contact details. " .
+                "Format as a structured list. Use markdown formatting with bold for names.";
+        }
+
+        if ($action === 'detect_tone') {
+            return "You are an expert at analyzing email tone and sentiment. " .
+                "Analyze the tone of the email and respond with a JSON object (no code block): " .
+                "{\"tone\": \"detected_tone\", \"confidence\": \"high/medium/low\", \"language\": \"detected_language_code\"}. " .
+                "Possible tones: professional, casual, friendly, formal, urgent, angry, apologetic, grateful, neutral. " .
+                "For language, use ISO 639-1 codes (en, pt, es, fr, de, it, etc.). " .
+                "Return ONLY the JSON, nothing else.";
+        }
+
         if ($action === 'scam') {
             return "You are a cybersecurity expert specialized in email fraud detection. " .
                 "Analyze the email for signs of scam, phishing, fraud, social engineering, or suspicious content.\n\n" .
@@ -954,15 +1326,17 @@ class lifeprisma_ai extends rcube_plugin
             "apply it to the previously generated text.";
     }
 
-    private function build_user_prompt($action, $instruction, $email_body, $reply_text, $subject, $language, $tone, $sender_name, $raw_headers = '', $original_sender = '')
+    private function build_user_prompt($action, $instruction, $email_body, $reply_text, $subject, $language, $tone, $sender_name, $raw_headers = '', $original_sender = '', $attachments = '')
     {
         switch ($action) {
             case 'compose':
                 return "Compose a new {$tone} email in {$language}.\n" .
                     ($subject ? "Subject context: {$subject}\n" : '') .
                     ($sender_name ? "From: {$sender_name}\n" : '') .
+                    ($attachments ? "{$attachments}\n" : '') .
                     "Instructions: {$instruction}\n\n" .
-                    "Write the email body only. No subject line.";
+                    "Write the email body only. No subject line." .
+                    ($attachments ? " Mention the attachments naturally in the email body." : '');
 
             case 'rewrite':
                 return "Here is the current email draft:\n\n{$email_body}\n\n" .
@@ -985,9 +1359,13 @@ class lifeprisma_ai extends rcube_plugin
                 if (!empty($sender_name)) {
                     $prompt .= "I am: {$sender_name}\n";
                 }
+                if (!empty($attachments)) {
+                    $prompt .= "{$attachments}\n";
+                }
                 $prompt .= "Write a {$tone} reply in {$language}.\n" .
                     "Instructions: {$instruction}\n\n" .
-                    "Return only the reply body.";
+                    "Return only the reply body." .
+                    ($attachments ? " Acknowledge or reference the attachments if relevant." : '');
                 return $prompt;
 
             case 'translate':
@@ -1029,6 +1407,31 @@ class lifeprisma_ai extends rcube_plugin
                     "- Action items and who is responsible\n" .
                     "- Current status\n\n" .
                     "Thread:\n{$text}";
+
+            case 'extract_actions':
+                $text = $reply_text ?: $email_body;
+                $prompt = "Extract all action items and tasks from this email";
+                if (!empty($subject)) $prompt .= " (Subject: {$subject})";
+                $prompt .= ".\nRespond in {$language}.\n\n{$text}";
+                return $prompt;
+
+            case 'extract_dates':
+                $text = $reply_text ?: $email_body;
+                $prompt = "Extract all dates, deadlines, and time references from this email";
+                if (!empty($subject)) $prompt .= " (Subject: {$subject})";
+                $prompt .= ".\nRespond in {$language}.\n\n{$text}";
+                return $prompt;
+
+            case 'extract_contacts':
+                $text = $reply_text ?: $email_body;
+                $prompt = "Extract all contact information from this email";
+                if (!empty($subject)) $prompt .= " (Subject: {$subject})";
+                $prompt .= ".\nRespond in {$language}.\n\n{$text}";
+                return $prompt;
+
+            case 'detect_tone':
+                $text = $reply_text ?: $email_body;
+                return "Analyze the tone and language of this email:\n\n{$text}";
 
             default:
                 return "Help with this email in {$language} with a {$tone} tone.\n" .

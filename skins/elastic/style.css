@@ -1054,6 +1054,209 @@ html.dark-mode .lpai-qa-verdict-danger .lpai-qa-result-header,
 .dark-mode .lpai-qa-verdict-danger .lpai-qa-result-header { background: #3b1111; color: #ef9a9a; border-bottom-color: #c62828; }
 
 /* ============================
+   Admin Panel
+   ============================ */
+.lpai-admin {
+    max-width: 700px;
+}
+
+.lpai-admin-section {
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #eee;
+}
+
+.lpai-admin-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #2c363a;
+    margin: 0 0 12px 0;
+}
+
+.lpai-admin-stats {
+    display: flex;
+    gap: 16px;
+}
+
+.lpai-admin-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 24px;
+    background: #f4f4f4;
+    border-radius: 0.25rem;
+    min-width: 100px;
+}
+
+.lpai-admin-stat-num {
+    font-size: 28px;
+    font-weight: 700;
+    color: #37beff;
+}
+
+.lpai-admin-stat-label {
+    font-size: 12px;
+    color: #8b9fa7;
+    font-weight: 500;
+}
+
+.lpai-admin-provider {
+    border: 1px solid #ddd;
+    border-radius: 0.25rem;
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
+.lpai-admin-provider-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.lpai-admin-key-status {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
+.lpai-admin-key-ok {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.lpai-admin-key-missing {
+    background: #fde8e8;
+    color: #c62828;
+}
+
+.lpai-admin-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.lpai-admin-field label {
+    font-size: 13px;
+    font-weight: 500;
+    color: #555;
+    min-width: 140px;
+}
+
+.lpai-admin-input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid #ced4da;
+    border-radius: 0.25rem;
+    font-size: 13px;
+    font-family: inherit;
+    color: #2c363a;
+    max-width: 350px;
+}
+
+.lpai-admin-input:focus {
+    outline: none;
+    border-color: #37beff;
+    box-shadow: 0 0 0 0.2rem rgba(55, 190, 255, 0.25);
+}
+
+.lpai-admin-features {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.lpai-admin-feature {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    color: #555;
+    cursor: pointer;
+    padding: 4px 10px;
+    border: 1px solid #eee;
+    border-radius: 0.25rem;
+    transition: all 0.15s;
+}
+
+.lpai-admin-feature:hover {
+    border-color: #37beff;
+}
+
+.lpai-admin-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.lpai-admin-save-btn {
+    padding: 8px 24px;
+    background: #37beff;
+    color: #fff;
+    border: 1px solid #37beff;
+    border-radius: 0.25rem;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+}
+
+.lpai-admin-save-btn:hover {
+    background: #1eb6ff;
+    border-color: #13b2ff;
+}
+
+.lpai-admin-loading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 24px;
+    color: #37beff;
+    font-size: 14px;
+}
+
+/* Prompt History */
+.lpai-history-item:hover {
+    border-color: #37beff !important;
+    color: #37beff !important;
+}
+
+/* Admin dark mode */
+html.dark-mode .lpai-admin-title,
+.dark-mode .lpai-admin-title { color: #c5d1d3; }
+
+html.dark-mode .lpai-admin-section,
+.dark-mode .lpai-admin-section { border-bottom-color: #4d6066; }
+
+html.dark-mode .lpai-admin-stat,
+.dark-mode .lpai-admin-stat { background: #2c373a; }
+
+html.dark-mode .lpai-admin-stat-label,
+.dark-mode .lpai-admin-stat-label { color: #7c949c; }
+
+html.dark-mode .lpai-admin-provider,
+.dark-mode .lpai-admin-provider { border-color: #4d6066; }
+
+html.dark-mode .lpai-admin-input,
+.dark-mode .lpai-admin-input { background: #21292c; border-color: #4d6066; color: #c5d1d3; }
+
+html.dark-mode .lpai-admin-field label,
+.dark-mode .lpai-admin-field label { color: #8b9fa7; }
+
+html.dark-mode .lpai-admin-feature,
+.dark-mode .lpai-admin-feature { border-color: #4d6066; color: #8b9fa7; }
+
+html.dark-mode .lpai-admin-key-ok,
+.dark-mode .lpai-admin-key-ok { background: #1b3a1b; color: #66bb6a; }
+
+html.dark-mode .lpai-admin-key-missing,
+.dark-mode .lpai-admin-key-missing { background: #3b1111; color: #ef9a9a; }
+
+/* ============================
    Mobile
    ============================ */
 @media (max-width: 600px) {

@@ -94,3 +94,12 @@ $config['lifeprisma_ai_temperature'] = 0.5;
 
 // Default language for generated emails
 $config['lifeprisma_ai_default_language'] = 'English';
+
+// Rate limit — minimum seconds between requests per user (default: 3)
+$config['lifeprisma_ai_rate_limit'] = 3;
+
+// Admin users — list of email addresses that can access the GenIA Admin Panel
+// These users will see "GenIA Admin Panel" in Settings and can manage providers, features, etc.
+$config['lifeprisma_ai_admins'] = [
+    // 'admin@yourdomain.com',
+];

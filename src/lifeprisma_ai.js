@@ -17,6 +17,11 @@ if (window.rcmail) {
             lpai_add_message_button();
         }
 
+        if (task === 'settings') {
+            // Init admin panel if on that section
+            setTimeout(function() { if (window.lpai_init_admin) lpai_init_admin(); }, 300);
+        }
+
         lpai_apply_server_prefs();
         lpai_restore_prefs();
         lpai_bind_events();
@@ -416,6 +421,7 @@ function lpai_compose_quick(action, language, clickedBtn) {
         msg_uid: '',
         mbox: '',
         view_context: 'compose',
+        attachments: lpai_get_attachments_json(),
         _token: rcmail.env.request_token
     };
 
@@ -583,6 +589,9 @@ function lpai_add_quick_actions() {
     };
     bar.appendChild(replyBtn);
 
+    // --- Snippet extraction buttons ---
+    lpai_add_snippet_buttons(bar);
+
     // --- Result panel (hidden) ---
     var resultPanel = document.createElement('div');
     resultPanel.id = 'lpai-qa-result';
@@ -654,7 +663,11 @@ function lpai_quick_action(action, clickedBtn) {
     resultPanel.style.display = 'block';
     resultPanel.className = 'lpai-qa-result' + (action === 'scam' ? ' lpai-qa-result-scam' : '');
     resultText.innerHTML = '';
-    if (resultTitle) resultTitle.textContent = action === 'scam' ? 'Scam Analysis' : action === 'thread_summarize' ? 'Thread Summary' : 'Summary';
+    var titles = {
+        'scam': 'Scam Analysis', 'thread_summarize': 'Thread Summary', 'summarize': 'Summary',
+        'extract_actions': 'Action Items', 'extract_dates': 'Dates & Deadlines', 'extract_contacts': 'Contacts'
+    };
+    if (resultTitle) resultTitle.textContent = titles[action] || 'Result';
 
     // Disable button
     var origLabel = clickedBtn.innerHTML;
@@ -685,6 +698,7 @@ function lpai_quick_action(action, clickedBtn) {
         msg_uid: rcmail.env.uid || '',
         mbox: rcmail.env.mailbox || '',
         view_context: 'read',
+        attachments: lpai_get_attachments_json(),
         _token: rcmail.env.request_token
     };
 
@@ -1121,6 +1135,15 @@ function lpai_bind_events() {
                 if (arrow) arrow.innerHTML = show ? '&#9660;' : '&#9654;';
             }
         }
+        if (e.target.id === 'lpai-history-toggle' || e.target.id === 'lpai-history-arrow') {
+            var histList = document.querySelector('#lpai-prompt-history .lpai-history-list');
+            var histArrow = document.getElementById('lpai-history-arrow');
+            if (histList) {
+                var show = histList.style.display === 'none';
+                histList.style.display = show ? 'block' : 'none';
+                if (histArrow) histArrow.innerHTML = show ? '&#9660;' : '&#9654;';
+            }
+        }
     });
 
     // Template select change
@@ -1232,6 +1255,31 @@ function lpai_open_panel(context) {
     if (ctxPreview) ctxPreview.style.display = 'none';
 
     lpai_load_templates();
+    lpai_load_prompt_history();
+
+    // Add length slider if not present
+    if (!document.getElementById('lpai-length-row')) {
+        var verbosityRow = document.getElementById('lpai-verbosity-row');
+        if (verbosityRow) {
+            var lengthRow = lpai_create_length_slider();
+            verbosityRow.parentNode.insertBefore(lengthRow, verbosityRow.nextSibling);
+        }
+    }
+    var lengthRow = document.getElementById('lpai-length-row');
+    if (lengthRow) lengthRow.style.display = 'none';
+
+    // Add prompt history section if not present
+    if (!document.getElementById('lpai-prompt-history')) {
+        var ctxPreview = document.getElementById('lpai-context-preview');
+        if (ctxPreview) {
+            var histDiv = document.createElement('div');
+            histDiv.id = 'lpai-prompt-history';
+            histDiv.style.display = 'none';
+            histDiv.innerHTML = '<div class="lpai-context-toggle" id="lpai-history-toggle">Recent Prompts <span id="lpai-history-arrow">&#9654;</span></div><div class="lpai-history-list lpai-context-body" style="display:none"></div>';
+            ctxPreview.parentNode.insertBefore(histDiv, ctxPreview);
+        }
+    }
+    lpai_render_prompt_history();
 
     // Restore saved option buttons
     document.querySelectorAll('.lpai-opt-btn[data-group="language"]').forEach(function(b) {
@@ -1277,26 +1325,34 @@ function lpai_open_panel(context) {
     var subjectLineBtn = document.querySelector('[data-action="suggest_subject"]');
     var threadSumBtn = document.querySelector('[data-action="thread_summarize"]');
 
+    // Check feature toggles
+    var feat = rcmail.env.lpai_features || {};
+    function showAction(btn, action, visible) {
+        if (!btn) return;
+        if (feat[action] === false) { btn.style.display = 'none'; return; }
+        btn.style.display = visible ? '' : 'none';
+    }
+
     if (context === 'read') {
-        if (composeBtn) composeBtn.style.display = 'none';
-        if (rewriteBtn) rewriteBtn.style.display = 'none';
-        if (fixBtn) fixBtn.style.display = 'none';
-        if (translateBtn) translateBtn.style.display = 'none';
-        if (subjectLineBtn) subjectLineBtn.style.display = 'none';
-        if (replyBtn) replyBtn.style.display = 'none';
-        if (summarizeBtn) summarizeBtn.style.display = '';
-        if (threadSumBtn) threadSumBtn.style.display = '';
-        if (scamBtn) scamBtn.style.display = '';
+        showAction(composeBtn, 'compose', false);
+        showAction(rewriteBtn, 'rewrite', false);
+        showAction(fixBtn, 'fix', false);
+        showAction(translateBtn, 'translate', false);
+        showAction(subjectLineBtn, 'suggest_subject', false);
+        showAction(replyBtn, 'reply', false);
+        showAction(summarizeBtn, 'summarize', true);
+        showAction(threadSumBtn, 'thread_summarize', true);
+        showAction(scamBtn, 'scam', true);
     } else {
-        if (composeBtn) composeBtn.style.display = '';
-        if (rewriteBtn) rewriteBtn.style.display = '';
-        if (fixBtn) fixBtn.style.display = '';
-        if (translateBtn) translateBtn.style.display = '';
-        if (subjectLineBtn) subjectLineBtn.style.display = '';
-        if (summarizeBtn) summarizeBtn.style.display = '';
-        if (threadSumBtn) threadSumBtn.style.display = 'none';
-        if (replyBtn) replyBtn.style.display = '';
-        if (scamBtn) scamBtn.style.display = '';
+        showAction(composeBtn, 'compose', true);
+        showAction(rewriteBtn, 'rewrite', true);
+        showAction(fixBtn, 'fix', true);
+        showAction(translateBtn, 'translate', true);
+        showAction(subjectLineBtn, 'suggest_subject', true);
+        showAction(summarizeBtn, 'summarize', true);
+        showAction(threadSumBtn, 'thread_summarize', false);
+        showAction(replyBtn, 'reply', true);
+        showAction(scamBtn, 'scam', true);
     }
 
     panel.style.display = 'flex';
@@ -1340,8 +1396,16 @@ function lpai_select_action(action) {
 
     var showLang = ['compose', 'rewrite', 'reply', 'translate', 'summarize'].indexOf(action) >= 0;
     var showTone = ['compose', 'rewrite', 'reply'].indexOf(action) >= 0;
+    var showLength = ['compose', 'rewrite', 'reply'].indexOf(action) >= 0;
     if (langRow) langRow.style.display = showLang ? 'flex' : 'none';
     if (toneRow) toneRow.style.display = showTone ? 'flex' : 'none';
+    var lengthRow = document.getElementById('lpai-length-row');
+    if (lengthRow) lengthRow.style.display = showLength ? 'flex' : 'none';
+
+    // Auto-detect tone and language when selecting reply
+    if (action === 'reply') {
+        lpai_detect_tone_and_language();
+    }
 
     if (action === 'scam') {
         lpai_options.reasoning = 'high';
@@ -1491,10 +1555,21 @@ function lpai_submit() {
     if (applyBtn) applyBtn.style.display = 'none';
     if (copyBtn) copyBtn.style.display = 'none';
 
+    // Enhance instruction with word count if set
+    var finalInstruction = instruction;
+    if (lpai_word_count > 0 && ['compose', 'rewrite', 'reply'].indexOf(lpai_current_action) >= 0) {
+        finalInstruction += (instruction ? '\n' : '') + 'Target length: approximately ' + lpai_word_count + ' words.';
+    }
+
+    // Save to prompt history
+    if (instruction) {
+        lpai_save_prompt_to_history(lpai_current_action, instruction);
+    }
+
     var postData = {
         _action: 'plugin.lifeprisma_ai_stream',
         ai_action: lpai_current_action,
-        instruction: instruction,
+        instruction: finalInstruction,
         email_body: lpai_get_editor_content(),
         reply_text: lpai_get_reply_text(),
         subject: lpai_get_subject(),
@@ -1509,6 +1584,7 @@ function lpai_submit() {
         msg_uid: rcmail.env.uid || '',
         mbox: rcmail.env.mailbox || '',
         view_context: lpai_panel_context,
+        attachments: lpai_get_attachments_json(),
         _token: rcmail.env.request_token
     };
 
@@ -1604,7 +1680,9 @@ function lpai_submit() {
                         } else if (event.type === 'done') {
                             var label = 'Preview';
                             if (event.tokens) {
-                                label += ' \u00B7 ' + event.tokens.input + ' in / ' + event.tokens.output + ' out tokens';
+                                label += ' \u00B7 ' + event.tokens.input + ' in / ' + event.tokens.output + ' out';
+                                var cost = lpai_estimate_cost(lpai_options.model, event.tokens.input, event.tokens.output);
+                                if (cost) label += ' \u00B7 ' + cost;
                             }
                             if (previewLabel) previewLabel.textContent = label;
                         } else if (event.type === 'error') {
@@ -1668,7 +1746,9 @@ function lpai_submit_fallback(postData) {
 
                 var label = 'Preview';
                 if (data.tokens) {
-                    label += ' \u00B7 ' + data.tokens.input + ' in / ' + data.tokens.output + ' out tokens';
+                    label += ' \u00B7 ' + data.tokens.input + ' in / ' + data.tokens.output + ' out';
+                    var cost = lpai_estimate_cost(lpai_options.model, data.tokens.input, data.tokens.output);
+                    if (cost) label += ' \u00B7 ' + cost;
                 }
                 if (previewLabel) previewLabel.textContent = label;
                 if (preview) preview.style.display = 'block';
@@ -1792,3 +1872,397 @@ function lpai_undo() {
         rcmail.display_message('Undo successful', 'confirmation');
     }
 }
+
+// ========================================
+// Token Cost Estimation (#3)
+// ========================================
+var lpai_pricing = {
+    // USD per 1M tokens [input, output]
+    'gpt-5.4':         [2.50, 10.00],
+    'gpt-4.1':         [2.00, 8.00],
+    'gpt-4o':          [2.50, 10.00],
+    'gpt-4o-mini':     [0.15, 0.60],
+    'grok-4-1-fast':   [3.00, 15.00],
+    'grok-4.1-fast':   [3.00, 15.00],
+    'grok-3':          [3.00, 15.00],
+    'grok-3-mini':     [0.30, 0.50],
+    'claude-sonnet-4-6':        [3.00, 15.00],
+    'claude-haiku-4-5-20251001': [0.80, 4.00],
+    'claude-opus-4-6':  [15.00, 75.00],
+};
+
+function lpai_estimate_cost(model, inputTokens, outputTokens) {
+    var rates = lpai_pricing[model];
+    if (!rates) return null;
+    var cost = (inputTokens * rates[0] + outputTokens * rates[1]) / 1000000;
+    if (cost < 0.001) return '< $0.001';
+    return '$' + cost.toFixed(4);
+}
+
+// ========================================
+// Tone Detection (#4) & Language Auto-Detect (#5)
+// ========================================
+function lpai_detect_tone_and_language() {
+    lpai_init_provider();
+
+    var emailText = lpai_get_reply_text() || lpai_get_editor_content();
+    if (!emailText || emailText.trim().length < 20) return;
+
+    var postData = {
+        _action: 'plugin.lifeprisma_ai_request',
+        ai_action: 'detect_tone',
+        instruction: '',
+        email_body: emailText.substring(0, 1000),
+        reply_text: '',
+        subject: lpai_get_subject(),
+        language: 'English',
+        tone: 'professional',
+        sender_name: '',
+        reasoning: 'none',
+        verbosity: 'low',
+        provider: lpai_options.provider,
+        model: lpai_options.model,
+        history: '[]',
+        msg_uid: rcmail.env.uid || '',
+        mbox: rcmail.env.mailbox || '',
+        view_context: lpai_panel_context,
+        _token: rcmail.env.request_token
+    };
+
+    var encoded = [];
+    for (var key in postData) {
+        encoded.push(encodeURIComponent(key) + '=' + encodeURIComponent(postData[key]));
+    }
+
+    fetch(rcmail.url('plugin.lifeprisma_ai_request'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: encoded.join('&')
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.status === 'success' && data.result) {
+            try {
+                var info = JSON.parse(data.result.replace(/```json\n?|\n?```/g, '').trim());
+
+                // Auto-set tone if detected
+                if (info.tone) {
+                    var toneBtn = document.querySelector('.lpai-opt-btn[data-group="tone"][data-value="' + info.tone + '"]');
+                    if (toneBtn) {
+                        document.querySelectorAll('.lpai-opt-btn[data-group="tone"]').forEach(function(b) { b.classList.remove('active'); });
+                        toneBtn.classList.add('active');
+                        lpai_options.tone = info.tone;
+                    }
+                }
+
+                // Auto-detect language for translation
+                if (info.language) {
+                    var langMap = { 'pt': 'Portuguese', 'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German', 'it': 'Italian' };
+                    var detected = langMap[info.language] || null;
+                    if (detected) {
+                        // Store detected source language
+                        window.lpai_detected_language = detected;
+                    }
+                }
+            } catch (e) {}
+        }
+    }).catch(function() {});
+}
+
+// ========================================
+// Snippet Extraction (#6)
+// ========================================
+function lpai_add_snippet_buttons(bar) {
+    var features = rcmail.env.lpai_features || {};
+
+    if (features.snippet_extract === false) return;
+
+    var snippets = [
+        { action: 'extract_actions', label: '&#9745; Actions', title: 'Extract action items' },
+        { action: 'extract_dates', label: '&#128197; Dates', title: 'Extract dates & deadlines' },
+        { action: 'extract_contacts', label: '&#128101; Contacts', title: 'Extract contact info' }
+    ];
+
+    for (var i = 0; i < snippets.length; i++) {
+        (function(s) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'lpai-qa-btn';
+            btn.innerHTML = s.label;
+            btn.title = s.title;
+            btn.onclick = function() { lpai_quick_action(s.action, btn); };
+            bar.appendChild(btn);
+        })(snippets[i]);
+    }
+}
+
+// ========================================
+// Attachment Awareness (#1)
+// ========================================
+function lpai_get_attachments_json() {
+    var attachments = rcmail.env.lpai_attachments || [];
+    if (attachments.length === 0) return '';
+    return JSON.stringify(attachments);
+}
+
+// ========================================
+// Response Length Slider (#7)
+// ========================================
+var lpai_word_count = 0; // 0 = use verbosity buttons
+
+function lpai_create_length_slider() {
+    var row = document.createElement('div');
+    row.id = 'lpai-length-row';
+    row.className = 'lpai-btn-group';
+    row.style.display = 'none';
+
+    var label = document.createElement('span');
+    label.className = 'lpai-group-label';
+    label.textContent = 'Length';
+    row.appendChild(label);
+
+    var slider = document.createElement('input');
+    slider.type = 'range';
+    slider.id = 'lpai-length-slider';
+    slider.min = '0';
+    slider.max = '500';
+    slider.step = '25';
+    slider.value = '0';
+    slider.style.cssText = 'flex:1;max-width:160px;cursor:pointer;accent-color:#37beff';
+    row.appendChild(slider);
+
+    var valLabel = document.createElement('span');
+    valLabel.id = 'lpai-length-value';
+    valLabel.style.cssText = 'font-size:11px;color:#8b9fa7;min-width:50px';
+    valLabel.textContent = 'Auto';
+    row.appendChild(valLabel);
+
+    slider.addEventListener('input', function() {
+        var val = parseInt(slider.value);
+        lpai_word_count = val;
+        if (val === 0) {
+            valLabel.textContent = 'Auto';
+        } else {
+            valLabel.textContent = '~' + val + ' words';
+        }
+    });
+
+    return row;
+}
+
+// ========================================
+// Prompt History (#8)
+// ========================================
+var lpai_prompt_history = [];
+
+function lpai_load_prompt_history() {
+    try {
+        var saved = JSON.parse(localStorage.getItem('lpai_prompt_history'));
+        if (Array.isArray(saved)) lpai_prompt_history = saved.slice(0, 10);
+    } catch (e) {}
+}
+
+function lpai_save_prompt_to_history(action, instruction) {
+    if (!instruction || instruction.trim().length < 3) return;
+    // Remove duplicate
+    lpai_prompt_history = lpai_prompt_history.filter(function(p) {
+        return p.instruction !== instruction || p.action !== action;
+    });
+    lpai_prompt_history.unshift({ action: action, instruction: instruction, time: Date.now() });
+    if (lpai_prompt_history.length > 10) lpai_prompt_history = lpai_prompt_history.slice(0, 10);
+    try { localStorage.setItem('lpai_prompt_history', JSON.stringify(lpai_prompt_history)); } catch (e) {}
+}
+
+function lpai_render_prompt_history() {
+    var container = document.getElementById('lpai-prompt-history');
+    if (!container) return;
+
+    if (lpai_prompt_history.length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+
+    container.style.display = 'block';
+    var list = container.querySelector('.lpai-history-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    for (var i = 0; i < lpai_prompt_history.length; i++) {
+        (function(item) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'lpai-qa-btn lpai-history-item';
+            btn.style.cssText = 'display:block;width:100%;text-align:left;margin:2px 0;padding:4px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px';
+            var label = item.action.charAt(0).toUpperCase() + item.action.slice(1);
+            btn.innerHTML = '<strong>' + label + ':</strong> ' + item.instruction.substring(0, 60) + (item.instruction.length > 60 ? '...' : '');
+            btn.onclick = function() {
+                lpai_select_action(item.action);
+                var input = document.getElementById('lpai-input');
+                if (input) { input.value = item.instruction; input.style.display = ''; }
+            };
+            list.appendChild(btn);
+        })(lpai_prompt_history[i]);
+    }
+}
+
+// ========================================
+// Admin Panel UI
+// ========================================
+function lpai_init_admin() {
+    var root = document.getElementById('lpai-admin-root');
+    if (!root) return;
+
+    var urlConfig = root.dataset.urlConfig;
+    var urlSave = root.dataset.urlSave;
+    var token = root.dataset.token;
+
+    root.innerHTML = '<div class="lpai-admin-loading"><div class="lpai-spinner"></div> Loading admin panel...</div>';
+
+    fetch(urlConfig + '&op=get_config&_token=' + encodeURIComponent(token)).then(function(r) {
+        return r.json();
+    }).then(function(data) {
+        if (data.status !== 'success') {
+            root.innerHTML = '<div style="color:#e74c3c;padding:16px">Error: ' + (data.message || 'Failed to load') + '</div>';
+            return;
+        }
+        lpai_render_admin(root, data, urlSave, token);
+    }).catch(function(err) {
+        root.innerHTML = '<div style="color:#e74c3c;padding:16px">Error: ' + err.message + '</div>';
+    });
+}
+
+function lpai_render_admin(root, data, urlSave, token) {
+    var providers = data.providers || {};
+    var settings = data.settings || {};
+    var features = data.features || {};
+    var usage = data.usage || {};
+
+    var html = '<div class="lpai-admin">';
+
+    // Usage Stats
+    html += '<div class="lpai-admin-section">';
+    html += '<h3 class="lpai-admin-title">Usage Overview</h3>';
+    html += '<div class="lpai-admin-stats">';
+    html += '<div class="lpai-admin-stat"><span class="lpai-admin-stat-num">' + (usage.total_users || 0) + '</span><span class="lpai-admin-stat-label">Total Users</span></div>';
+    html += '<div class="lpai-admin-stat"><span class="lpai-admin-stat-num">' + (usage.active_users || 0) + '</span><span class="lpai-admin-stat-label">GenIA Users</span></div>';
+    html += '</div></div>';
+
+    // Providers
+    html += '<div class="lpai-admin-section">';
+    html += '<h3 class="lpai-admin-title">AI Providers</h3>';
+    var pids = Object.keys(providers);
+    for (var i = 0; i < pids.length; i++) {
+        var pid = pids[i];
+        var p = providers[pid];
+        html += '<div class="lpai-admin-provider" data-pid="' + pid + '">';
+        html += '<div class="lpai-admin-provider-header">';
+        html += '<strong>' + (p.label || pid) + '</strong>';
+        html += '<span class="lpai-admin-key-status ' + (p.has_key ? 'lpai-admin-key-ok' : 'lpai-admin-key-missing') + '">' + (p.has_key ? 'Key configured' : 'No API key') + '</span>';
+        html += '</div>';
+        html += '<div class="lpai-admin-field"><label>API Key</label><input type="password" class="lpai-admin-input lpai-admin-apikey" data-pid="' + pid + '" placeholder="' + (p.api_key_masked || 'Enter API key...') + '"></div>';
+        html += '<div class="lpai-admin-field"><label>Model</label><input type="text" class="lpai-admin-input lpai-admin-model" data-pid="' + pid + '" value="' + (p.model || '') + '"></div>';
+        html += '<div class="lpai-admin-field"><label>Models (comma-separated)</label><input type="text" class="lpai-admin-input lpai-admin-models" data-pid="' + pid + '" value="' + ((p.models || []).join(', ')) + '"></div>';
+        html += '</div>';
+    }
+    html += '</div>';
+
+    // Global Settings
+    html += '<div class="lpai-admin-section">';
+    html += '<h3 class="lpai-admin-title">Global Settings</h3>';
+    html += '<div class="lpai-admin-field"><label>Max Tokens</label><input type="number" id="lpai-admin-max-tokens" class="lpai-admin-input" value="' + (settings.max_tokens || 2000) + '"></div>';
+    html += '<div class="lpai-admin-field"><label>Temperature (0.0-1.0)</label><input type="number" id="lpai-admin-temperature" class="lpai-admin-input" step="0.1" min="0" max="1" value="' + (settings.temperature || 0.5) + '"></div>';
+    html += '<div class="lpai-admin-field"><label>Rate Limit (seconds between requests)</label><input type="number" id="lpai-admin-rate-limit" class="lpai-admin-input" value="' + (settings.rate_limit || 3) + '"></div>';
+    html += '<div class="lpai-admin-field"><label>Default Language</label><select id="lpai-admin-language" class="lpai-admin-input">';
+    var langs = ['Portuguese', 'English', 'Spanish', 'French', 'German', 'Italian'];
+    for (var li = 0; li < langs.length; li++) {
+        html += '<option value="' + langs[li] + '"' + (settings.default_language === langs[li] ? ' selected' : '') + '>' + langs[li] + '</option>';
+    }
+    html += '</select></div></div>';
+
+    // Feature Toggles
+    html += '<div class="lpai-admin-section">';
+    html += '<h3 class="lpai-admin-title">Feature Toggles</h3>';
+    html += '<div class="lpai-admin-features">';
+    var featureList = [
+        { id: 'compose', label: 'Compose' }, { id: 'rewrite', label: 'Rewrite' },
+        { id: 'reply', label: 'Reply' }, { id: 'translate', label: 'Translate' },
+        { id: 'summarize', label: 'Summarize' }, { id: 'fix', label: 'Fix Grammar' },
+        { id: 'scam', label: 'Scam Check' }, { id: 'suggest_subject', label: 'Subject Line' },
+        { id: 'thread_summarize', label: 'Thread Summary' }, { id: 'snippet_extract', label: 'Snippet Extraction' },
+    ];
+    for (var fi = 0; fi < featureList.length; fi++) {
+        var f = featureList[fi];
+        var checked = features[f.id] !== false ? ' checked' : '';
+        html += '<label class="lpai-admin-feature"><input type="checkbox" class="lpai-admin-feature-cb" data-feature="' + f.id + '"' + checked + '> ' + f.label + '</label>';
+    }
+    html += '</div></div>';
+
+    // Save button
+    html += '<div class="lpai-admin-actions">';
+    html += '<button type="button" id="lpai-admin-save" class="lpai-admin-save-btn">Save Settings</button>';
+    html += '<span id="lpai-admin-status"></span>';
+    html += '</div>';
+    html += '</div>';
+
+    root.innerHTML = html;
+
+    // Save handler
+    document.getElementById('lpai-admin-save').onclick = function() {
+        var saveData = { providers: {}, settings: {}, features: {} };
+
+        // Collect provider data
+        document.querySelectorAll('.lpai-admin-provider').forEach(function(el) {
+            var pid = el.dataset.pid;
+            var orig = providers[pid] || {};
+            var keyInput = el.querySelector('.lpai-admin-apikey');
+            var modelInput = el.querySelector('.lpai-admin-model');
+            var modelsInput = el.querySelector('.lpai-admin-models');
+
+            saveData.providers[pid] = {
+                label: orig.label || pid,
+                api_url: orig.api_url || '',
+                api_type: orig.api_type || 'responses',
+                api_key: keyInput.value || '',
+                model: modelInput.value || orig.model || '',
+                models: (modelsInput.value || '').split(',').map(function(m) { return m.trim(); }).filter(Boolean),
+                supports_reasoning: orig.supports_reasoning !== undefined ? orig.supports_reasoning : true,
+            };
+        });
+
+        // Collect settings
+        saveData.settings = {
+            max_tokens: parseInt(document.getElementById('lpai-admin-max-tokens').value) || 2000,
+            temperature: parseFloat(document.getElementById('lpai-admin-temperature').value) || 0.5,
+            rate_limit: parseInt(document.getElementById('lpai-admin-rate-limit').value) || 3,
+            default_language: document.getElementById('lpai-admin-language').value || 'English',
+        };
+
+        // Collect features
+        document.querySelectorAll('.lpai-admin-feature-cb').forEach(function(cb) {
+            saveData.features[cb.dataset.feature] = cb.checked;
+        });
+
+        var status = document.getElementById('lpai-admin-status');
+        status.textContent = 'Saving...';
+        status.style.color = '#37beff';
+
+        fetch(urlSave + '&_token=' + encodeURIComponent(token), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(saveData)
+        }).then(function(r) { return r.json(); }).then(function(res) {
+            if (res.status === 'success') {
+                status.textContent = 'Saved!';
+                status.style.color = '#41b849';
+                setTimeout(function() { status.textContent = ''; }, 3000);
+            } else {
+                status.textContent = 'Error: ' + (res.message || 'Failed');
+                status.style.color = '#e74c3c';
+            }
+        }).catch(function(err) {
+            status.textContent = 'Error: ' + err.message;
+            status.style.color = '#e74c3c';
+        });
+    };
+}
+
+// Make admin init globally available
+window.lpai_init_admin = lpai_init_admin;
