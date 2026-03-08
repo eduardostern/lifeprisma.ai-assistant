@@ -192,8 +192,15 @@ function lpai_init_provider() {
     }
 
     if (!lpai_options.provider) {
-        lpai_options.provider = ids[0];
-        lpai_options.model = providers[ids[0]].default_model;
+        // Use admin-configured default provider if set
+        var defaultProvider = rcmail.env.lpai_default_provider || '';
+        if (defaultProvider && providers[defaultProvider]) {
+            lpai_options.provider = defaultProvider;
+            lpai_options.model = providers[defaultProvider].default_model;
+        } else {
+            lpai_options.provider = ids[0];
+            lpai_options.model = providers[ids[0]].default_model;
+        }
     }
 
     // Validate saved model exists for provider
@@ -433,7 +440,7 @@ function lpai_compose_quick(action, language, clickedBtn) {
     tempDiv.style.display = 'none';
     document.body.appendChild(tempDiv);
 
-    lpai_stream_to_element(postData, tempDiv, lpai_compose_controller, function(fullText) {
+    lpai_stream_to_element(postData, tempDiv, lpai_compose_controller, function(fullText, tokens, model) {
         lpai_compose_controller = null;
         clickedBtn.disabled = false;
         clickedBtn.innerHTML = origLabel;
@@ -442,18 +449,19 @@ function lpai_compose_quick(action, language, clickedBtn) {
         if (fullText) {
             lpai_set_editor_content(fullText);
 
-            // Show undo bar
+            // Show undo bar with usage info
             var undoBar = document.getElementById('lpai-undo-bar');
             if (!undoBar) {
                 undoBar = document.createElement('div');
                 undoBar.id = 'lpai-undo-bar';
-                undoBar.innerHTML = '<span>GenIA text applied</span><button id="lpai-undo-global" type="button">Undo</button>';
                 document.body.appendChild(undoBar);
-                document.getElementById('lpai-undo-global').onclick = function() {
-                    lpai_undo();
-                    undoBar.style.display = 'none';
-                };
             }
+            var usageLabel = lpai_format_usage_label(model || lpai_options.model, tokens);
+            undoBar.innerHTML = '<span>GenIA text applied' + (usageLabel ? ' \u00B7 ' + usageLabel : '') + '</span><button id="lpai-undo-global" type="button">Undo</button>';
+            document.getElementById('lpai-undo-global').onclick = function() {
+                lpai_undo();
+                undoBar.style.display = 'none';
+            };
             undoBar.style.display = 'flex';
             setTimeout(function() {
                 if (undoBar) undoBar.style.display = 'none';
@@ -505,6 +513,21 @@ function lpai_add_quick_actions() {
     label.className = 'lpai-qa-label';
     label.innerHTML = '&#9733; GenIA';
     bar.appendChild(label);
+
+    // Spam score badge
+    var msgCtx = rcmail.env.lpai_msg_context || {};
+    var spamScore = msgCtx.spam_score;
+    if (spamScore !== null && spamScore !== undefined) {
+        var scoreBadge = document.createElement('span');
+        var scoreClass = 'lpai-spam-score';
+        if (spamScore >= 4) scoreClass += ' lpai-spam-high';
+        else if (spamScore >= 2) scoreClass += ' lpai-spam-med';
+        else scoreClass += ' lpai-spam-low';
+        scoreBadge.className = scoreClass;
+        scoreBadge.title = 'Rspamd spam score (threshold: 4)';
+        scoreBadge.textContent = 'Spam: ' + spamScore.toFixed(1);
+        bar.appendChild(scoreBadge);
+    }
 
     // --- Translate dropdown ---
     var trWrap = document.createElement('div');
@@ -705,10 +728,16 @@ function lpai_quick_action(action, clickedBtn) {
         _token: rcmail.env.request_token
     };
 
-    lpai_stream_to_element(postData, resultText, lpai_qa_controller, function() {
+    lpai_stream_to_element(postData, resultText, lpai_qa_controller, function(fullText, tokens, model) {
         clickedBtn.disabled = false;
         clickedBtn.innerHTML = origLabel;
         lpai_qa_controller = null;
+
+        // Show usage info in result title
+        if (resultTitle && (tokens || model)) {
+            var usageLabel = lpai_format_usage_label(model || lpai_options.model, tokens);
+            if (usageLabel) resultTitle.textContent = (titles[action] || 'Result') + ' \u00B7 ' + usageLabel;
+        }
 
         // Color the scam result panel based on verdict
         if (action === 'scam') {
@@ -778,10 +807,16 @@ function lpai_translate_to(language, toggleBtn) {
         _token: rcmail.env.request_token
     };
 
-    lpai_stream_to_element(postData, resultText, lpai_qa_controller, function() {
+    lpai_stream_to_element(postData, resultText, lpai_qa_controller, function(fullText, tokens, model) {
         toggleBtn.disabled = false;
         toggleBtn.innerHTML = origLabel;
         lpai_qa_controller = null;
+
+        // Show usage info
+        if (resultTitle && (tokens || model)) {
+            var usageLabel = lpai_format_usage_label(model || lpai_options.model, tokens);
+            if (usageLabel) resultTitle.textContent = 'Translation (' + language + ') \u00B7 ' + usageLabel;
+        }
     }, function(err) {
         toggleBtn.disabled = false;
         toggleBtn.innerHTML = origLabel;
@@ -810,11 +845,12 @@ function lpai_stream_to_element(postData, targetEl, controller, onDone, onError)
         var decoder = new TextDecoder();
         var buffer = '';
         var fullText = '';
+        var streamTokens = null;
 
         function readChunk() {
             return reader.read().then(function(result) {
                 if (result.done) {
-                    if (onDone) onDone(fullText);
+                    if (onDone) onDone(fullText, streamTokens, postData.model || '');
                     return;
                 }
 
@@ -832,6 +868,8 @@ function lpai_stream_to_element(postData, targetEl, controller, onDone, onError)
                         if (event.type === 'delta') {
                             fullText += event.text;
                             targetEl.innerHTML = lpai_md_to_html(fullText);
+                        } else if (event.type === 'done') {
+                            streamTokens = event.tokens || null;
                         } else if (event.type === 'error') {
                             targetEl.innerHTML = '<span style="color:#ef4444">Error: ' + (event.message || 'Unknown') + '</span>';
                         }
@@ -899,7 +937,7 @@ function lpai_suggest_subject(clickedBtn) {
         clickedBtn.innerHTML = origLabel;
 
         if (data.status === 'success' && data.result) {
-            lpai_show_subject_picker(data.result);
+            lpai_show_subject_picker(data.result, data.model, data.tokens);
         } else {
             if (rcmail.display_message) rcmail.display_message('Error: ' + (data.message || 'Failed'), 'error');
         }
@@ -910,7 +948,7 @@ function lpai_suggest_subject(clickedBtn) {
     });
 }
 
-function lpai_show_subject_picker(text) {
+function lpai_show_subject_picker(text, model, tokens) {
     var existing = document.getElementById('lpai-subject-picker');
     if (existing) existing.remove();
 
@@ -924,7 +962,8 @@ function lpai_show_subject_picker(text) {
 
     var header = document.createElement('div');
     header.className = 'lpai-qa-result-header';
-    header.innerHTML = '<span>Pick a subject line</span>';
+    var usageLabel = lpai_format_usage_label(model || lpai_options.model, tokens);
+    header.innerHTML = '<span>Pick a subject line' + (usageLabel ? ' \u00B7 ' + usageLabel : '') + '</span>';
     var closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'lpai-qa-result-close';
@@ -1245,58 +1284,13 @@ function lpai_open_panel(context) {
     var templatesRow = document.getElementById('lpai-templates-row');
     var ctxPreview = document.getElementById('lpai-context-preview');
 
-    if (input) { input.value = ''; input.placeholder = 'What do you want GenIA to do?'; input.style.display = ''; }
     if (preview) preview.style.display = 'none';
     if (applyBtn) applyBtn.style.display = 'none';
     if (copyBtn) copyBtn.style.display = 'none';
     if (undoBtn) undoBtn.style.display = 'none';
-    if (draftBtn) draftBtn.style.display = 'none';
     if (loading) loading.style.display = 'none';
-    if (langRow) langRow.style.display = 'none';
-    if (toneRow) toneRow.style.display = 'none';
-    if (templatesRow) templatesRow.style.display = 'flex';
-    if (ctxPreview) ctxPreview.style.display = 'none';
-
-    lpai_load_templates();
-    lpai_load_prompt_history();
-
-    // Add length slider if not present
-    if (!document.getElementById('lpai-length-row')) {
-        var verbosityRow = document.getElementById('lpai-verbosity-row');
-        if (verbosityRow) {
-            var lengthRow = lpai_create_length_slider();
-            verbosityRow.parentNode.insertBefore(lengthRow, verbosityRow.nextSibling);
-        }
-    }
-    var lengthRow = document.getElementById('lpai-length-row');
-    if (lengthRow) lengthRow.style.display = 'none';
-
-    // Add prompt history section if not present
-    if (!document.getElementById('lpai-prompt-history')) {
-        var ctxPreview = document.getElementById('lpai-context-preview');
-        if (ctxPreview) {
-            var histDiv = document.createElement('div');
-            histDiv.id = 'lpai-prompt-history';
-            histDiv.style.display = 'none';
-            histDiv.innerHTML = '<div class="lpai-context-toggle" id="lpai-history-toggle">Recent Prompts <span id="lpai-history-arrow">&#9654;</span></div><div class="lpai-history-list lpai-context-body" style="display:none"></div>';
-            ctxPreview.parentNode.insertBefore(histDiv, ctxPreview);
-        }
-    }
-    lpai_render_prompt_history();
-
-    // Restore saved option buttons
-    document.querySelectorAll('.lpai-opt-btn[data-group="language"]').forEach(function(b) {
-        b.classList.toggle('active', b.dataset.value === lpai_options.language);
-    });
-    document.querySelectorAll('.lpai-opt-btn[data-group="tone"]').forEach(function(b) {
-        b.classList.toggle('active', b.dataset.value === lpai_options.tone);
-    });
-    document.querySelectorAll('.lpai-opt-btn[data-group="reasoning"]').forEach(function(b) {
-        b.classList.toggle('active', b.dataset.value === lpai_options.reasoning);
-    });
-    document.querySelectorAll('.lpai-opt-btn[data-group="verbosity"]').forEach(function(b) {
-        b.classList.toggle('active', b.dataset.value === lpai_options.verbosity);
-    });
+    var readFollowup = document.getElementById('lpai-read-followup');
+    if (readFollowup) readFollowup.style.display = 'none';
 
     // Restore provider button
     document.querySelectorAll('.lpai-provider-btn').forEach(function(b) {
@@ -1336,17 +1330,169 @@ function lpai_open_panel(context) {
         btn.style.display = visible ? '' : 'none';
     }
 
+    var reasoningRow = document.getElementById('lpai-reasoning-row');
+    var verbosityRow = document.getElementById('lpai-verbosity-row');
+    var lengthRow = document.getElementById('lpai-length-row');
+
     if (context === 'read') {
-        showAction(composeBtn, 'compose', false);
-        showAction(rewriteBtn, 'rewrite', false);
-        showAction(fixBtn, 'fix', false);
-        showAction(translateBtn, 'translate', false);
-        showAction(subjectLineBtn, 'suggest_subject', false);
-        showAction(replyBtn, 'reply', false);
-        showAction(summarizeBtn, 'summarize', true);
-        showAction(threadSumBtn, 'thread_summarize', true);
-        showAction(scamBtn, 'scam', true);
+        // ---- READ VIEW: dedicated reader layout ----
+        // Hide ALL compose elements
+        var hideEls = [input, langRow, toneRow, draftBtn, templatesRow, ctxPreview,
+            reasoningRow, verbosityRow, lengthRow,
+            document.getElementById('lpai-prompt-history'),
+            document.getElementById('lpai-actions'),
+            document.getElementById('lpai-submit')];
+        hideEls.forEach(function(el) { if (el) el.style.display = 'none'; });
+
+        // Build read-view action grid (once)
+        var readGrid = document.getElementById('lpai-read-grid');
+        if (!readGrid) {
+            readGrid = document.createElement('div');
+            readGrid.id = 'lpai-read-grid';
+            readGrid.className = 'lpai-read-grid';
+
+            var defaultLang = lpai_options.language || 'Portuguese';
+            var langs = [
+                { code: 'Portuguese', label: 'PT' }, { code: 'English', label: 'EN' },
+                { code: 'Spanish', label: 'ES' }, { code: 'French', label: 'FR' },
+                { code: 'German', label: 'DE' }, { code: 'Italian', label: 'IT' },
+            ];
+
+            // Language bar
+            var langBar = document.createElement('div');
+            langBar.className = 'lpai-read-lang-bar';
+            var langLabel = document.createElement('span');
+            langLabel.className = 'lpai-read-lang-label';
+            langLabel.textContent = 'Language:';
+            langBar.appendChild(langLabel);
+            for (var li = 0; li < langs.length; li++) {
+                var lb = document.createElement('button');
+                lb.type = 'button';
+                lb.className = 'lpai-read-lang-btn' + (langs[li].code === defaultLang ? ' active' : '');
+                lb.dataset.lang = langs[li].code;
+                lb.textContent = langs[li].label;
+                lb.onclick = (function(lang) {
+                    return function() {
+                        lpai_options.language = lang;
+                        langBar.querySelectorAll('.lpai-read-lang-btn').forEach(function(b) {
+                            b.classList.toggle('active', b.dataset.lang === lang);
+                        });
+                        try { var p = JSON.parse(localStorage.getItem('lpai_prefs') || '{}'); p.language = lang; localStorage.setItem('lpai_prefs', JSON.stringify(p)); } catch(e) {}
+                    };
+                })(langs[li].code);
+                langBar.appendChild(lb);
+            }
+            readGrid.appendChild(langBar);
+
+            // Action buttons
+            var actions = [
+                { action: 'summarize', icon: '&#128220;', label: 'Summarize', feature: 'summarize' },
+                { action: 'thread_summarize', icon: '&#128209;', label: 'Thread', feature: 'thread_summarize' },
+                { action: 'translate', icon: '&#127760;', label: 'Translate', feature: 'translate' },
+                { action: 'scam', icon: '&#128737;', label: 'Scam Check', feature: 'scam' },
+            ];
+
+            var btnRow = document.createElement('div');
+            btnRow.className = 'lpai-read-btn-row';
+            for (var ai = 0; ai < actions.length; ai++) {
+                var a = actions[ai];
+                if (feat[a.feature] === false) continue;
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'lpai-read-action-btn';
+                btn.dataset.action = a.action;
+                btn.innerHTML = '<span class="lpai-read-action-icon">' + a.icon + '</span> ' + a.label;
+                btn.onclick = (function(act) {
+                    return function() {
+                        document.querySelectorAll('.lpai-read-action-btn').forEach(function(b) { b.classList.remove('active'); });
+                        this.classList.add('active');
+                        // Clear stale input and history for fresh action
+                        var mainInput = document.getElementById('lpai-input');
+                        if (mainInput) mainInput.value = '';
+                        lpai_history = [];
+                        lpai_current_action = act;
+                        lpai_submit();
+                    };
+                })(a.action);
+                btnRow.appendChild(btn);
+            }
+            readGrid.appendChild(btnRow);
+
+            // Reply with AI button
+            var replyBtn = document.createElement('button');
+            replyBtn.type = 'button';
+            replyBtn.className = 'lpai-read-reply-btn';
+            replyBtn.innerHTML = '&#10024; Reply with AI';
+            replyBtn.onclick = function() {
+                lpai_close_panel();
+                try { localStorage.setItem('lpai_pending_reply', '1'); } catch (e) {}
+                rcmail.command('reply');
+            };
+            readGrid.appendChild(replyBtn);
+
+            // Insert into DOM
+            var body = document.getElementById('lpai-body');
+            var preview = document.getElementById('lpai-preview');
+            if (body && preview) {
+                body.insertBefore(readGrid, preview);
+            }
+        }
+        readGrid.style.display = '';
+
     } else {
+        // Hide read-view elements in compose
+        var readGrid = document.getElementById('lpai-read-grid');
+        if (readGrid) readGrid.style.display = 'none';
+        var actionsRow = document.getElementById('lpai-actions');
+        if (actionsRow) actionsRow.style.display = '';
+        // ---- COMPOSE VIEW ----
+        if (input) { input.value = ''; input.placeholder = 'What do you want GenIA to do?'; input.style.display = ''; }
+        if (langRow) langRow.style.display = 'none';
+        if (toneRow) toneRow.style.display = 'none';
+        if (draftBtn) draftBtn.style.display = 'none';
+        if (templatesRow) templatesRow.style.display = 'flex';
+        if (ctxPreview) ctxPreview.style.display = 'none';
+
+        lpai_load_templates();
+        lpai_load_prompt_history();
+
+        // Add length slider if not present
+        if (!lengthRow) {
+            if (verbosityRow) {
+                lengthRow = lpai_create_length_slider();
+                verbosityRow.parentNode.insertBefore(lengthRow, verbosityRow.nextSibling);
+            }
+        }
+        if (lengthRow) lengthRow.style.display = 'none';
+
+        // Add prompt history section if not present
+        if (!document.getElementById('lpai-prompt-history')) {
+            var ctx = document.getElementById('lpai-context-preview');
+            if (ctx) {
+                var histDiv = document.createElement('div');
+                histDiv.id = 'lpai-prompt-history';
+                histDiv.style.display = 'none';
+                histDiv.innerHTML = '<div class="lpai-context-toggle" id="lpai-history-toggle">Recent Prompts <span id="lpai-history-arrow">&#9654;</span></div><div class="lpai-history-list lpai-context-body" style="display:none"></div>';
+                ctx.parentNode.insertBefore(histDiv, ctx);
+            }
+        }
+        lpai_render_prompt_history();
+
+        // Restore saved option buttons
+        document.querySelectorAll('.lpai-opt-btn[data-group="language"]').forEach(function(b) {
+            b.classList.toggle('active', b.dataset.value === lpai_options.language);
+        });
+        document.querySelectorAll('.lpai-opt-btn[data-group="tone"]').forEach(function(b) {
+            b.classList.toggle('active', b.dataset.value === lpai_options.tone);
+        });
+        document.querySelectorAll('.lpai-opt-btn[data-group="reasoning"]').forEach(function(b) {
+            b.classList.toggle('active', b.dataset.value === lpai_options.reasoning);
+        });
+        document.querySelectorAll('.lpai-opt-btn[data-group="verbosity"]').forEach(function(b) {
+            b.classList.toggle('active', b.dataset.value === lpai_options.verbosity);
+        });
+
+        // Show compose actions
         showAction(composeBtn, 'compose', true);
         showAction(rewriteBtn, 'rewrite', true);
         showAction(fixBtn, 'fix', true);
@@ -1356,12 +1502,56 @@ function lpai_open_panel(context) {
         showAction(threadSumBtn, 'thread_summarize', false);
         showAction(replyBtn, 'reply', true);
         showAction(scamBtn, 'scam', true);
+
+        // Hide reply-ai button in compose
+        var replyAiBtn = document.getElementById('lpai-reply-ai-btn');
+        if (replyAiBtn) replyAiBtn.style.display = 'none';
+
+        // Show submit button
+        var submitBtn = document.getElementById('lpai-submit');
+        if (submitBtn) submitBtn.style.display = '';
     }
 
     panel.style.display = 'flex';
     overlay.style.display = 'block';
 
-    if (input) setTimeout(function() { input.focus(); }, 100);
+    if (context !== 'read' && input) setTimeout(function() { input.focus(); }, 100);
+}
+
+function lpai_show_read_followup() {
+    var existing = document.getElementById('lpai-read-followup');
+    if (existing) { existing.style.display = 'flex'; existing.querySelector('input').value = ''; existing.querySelector('input').focus(); return; }
+    var bar = document.createElement('div');
+    bar.id = 'lpai-read-followup';
+    bar.className = 'lpai-read-followup';
+    var fi = document.createElement('input');
+    fi.type = 'text';
+    fi.className = 'lpai-read-followup-input';
+    fi.placeholder = 'Follow up: "make it shorter", "translate to english"...';
+    var sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'lpai-read-followup-send';
+    sendBtn.innerHTML = '&#10148;';
+    sendBtn.title = 'Send';
+    var doSend = function() {
+        var val = fi.value.trim();
+        if (!val) return;
+        var mainInput = document.getElementById('lpai-input');
+        if (mainInput) mainInput.value = val;
+        fi.value = '';
+        lpai_submit();
+    };
+    sendBtn.onclick = doSend;
+    fi.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); doSend(); }
+    });
+    bar.appendChild(fi);
+    bar.appendChild(sendBtn);
+    var preview = document.getElementById('lpai-preview');
+    if (preview && preview.parentNode) {
+        preview.parentNode.insertBefore(bar, preview.nextSibling);
+    }
+    fi.focus();
 }
 
 function lpai_close_panel() {
@@ -1626,6 +1816,8 @@ function lpai_submit() {
                         lpai_last_result = fullText;
                         if (instruction) {
                             lpai_history.push({ role: 'user', content: instruction });
+                        } else if (lpai_current_action) {
+                            lpai_history.push({ role: 'user', content: '[Action: ' + lpai_current_action + ']' });
                         }
                         lpai_history.push({ role: 'assistant', content: fullText });
 
@@ -1651,12 +1843,16 @@ function lpai_submit() {
                             setTimeout(function() { rcmail.command('savedraft'); }, 500);
                         }
 
-                        // Show follow-up hint
-                        var inp = document.getElementById('lpai-input');
-                        if (inp) {
-                            inp.value = '';
-                            inp.placeholder = 'Follow up: "make it shorter", "translate to english"...';
-                            inp.style.display = '';
+                        // Show follow-up input
+                        if (lpai_panel_context === 'read') {
+                            lpai_show_read_followup();
+                        } else {
+                            var inp = document.getElementById('lpai-input');
+                            if (inp) {
+                                inp.value = '';
+                                inp.placeholder = 'Follow up: "make it shorter", "translate to english"...';
+                                inp.style.display = '';
+                            }
                         }
                     }
                     return;
@@ -1895,11 +2091,36 @@ var lpai_pricing = {
 };
 
 function lpai_estimate_cost(model, inputTokens, outputTokens) {
-    var rates = lpai_pricing[model];
+    var rates = null;
+    // Check provider-configured per-model pricing first
+    var providers = rcmail.env.lpai_providers || {};
+    var pids = Object.keys(providers);
+    for (var i = 0; i < pids.length; i++) {
+        var p = providers[pids[i]];
+        var pricing = p.pricing || {};
+        var mp = pricing[model];
+        if (mp && mp.input && mp.output) {
+            rates = [mp.input, mp.output];
+            break;
+        }
+    }
+    // Fallback to hardcoded pricing
+    if (!rates) rates = lpai_pricing[model];
     if (!rates) return null;
     var cost = (inputTokens * rates[0] + outputTokens * rates[1]) / 1000000;
-    if (cost < 0.001) return '< $0.001';
+    if (cost < 0.0001) return '$' + cost.toFixed(6);
     return '$' + cost.toFixed(4);
+}
+
+function lpai_format_usage_label(model, tokens) {
+    var parts = [];
+    if (model) parts.push(model);
+    if (tokens && (tokens.input || tokens.output)) {
+        parts.push(tokens.input + ' in / ' + tokens.output + ' out');
+        var cost = lpai_estimate_cost(model, tokens.input, tokens.output);
+        if (cost) parts.push(cost);
+    }
+    return parts.join(' \u00B7 ');
 }
 
 // ========================================
@@ -2132,6 +2353,80 @@ function lpai_init_admin() {
     });
 }
 
+var lpai_admin_api_presets = {
+    'openai_responses': { api_type: 'responses', api_url: 'https://api.openai.com/v1/responses', label: 'GPT', model: 'gpt-5.4', models: ['gpt-5.4', 'gpt-4.1', 'gpt-4o'], pricing: { 'gpt-5.4': { input: 2.50, output: 10.00 }, 'gpt-4.1': { input: 2.00, output: 8.00 }, 'gpt-4o': { input: 2.50, output: 10.00 } } },
+    'xai_responses': { api_type: 'responses', api_url: 'https://api.x.ai/v1/responses', label: 'Grok', model: 'grok-4.1-fast', models: ['grok-4.1-fast', 'grok-3'], pricing: { 'grok-4.1-fast': { input: 3.00, output: 15.00 }, 'grok-3': { input: 3.00, output: 15.00 } } },
+    'anthropic': { api_type: 'anthropic', api_url: 'https://api.anthropic.com/v1/messages', label: 'Claude', model: 'claude-sonnet-4-6', models: ['claude-sonnet-4-6', 'claude-haiku-4-5-20251001'], supports_reasoning: false, pricing: { 'claude-sonnet-4-6': { input: 3.00, output: 15.00 }, 'claude-haiku-4-5-20251001': { input: 0.80, output: 4.00 } } },
+    'ollama': { api_type: 'chat_completions', api_url: 'http://localhost:11434/v1/chat/completions', label: 'Ollama', model: 'llama3.1', models: ['llama3.1'], supports_reasoning: false },
+    'custom': { api_type: 'chat_completions', api_url: '', label: 'Custom', model: '', models: [] },
+};
+
+function lpai_admin_provider_html(pid, p) {
+    var apiTypes = [
+        { value: 'responses', label: 'OpenAI Responses API' },
+        { value: 'anthropic', label: 'Anthropic Messages API' },
+        { value: 'chat_completions', label: 'Chat Completions (Ollama, LM Studio, etc.)' },
+    ];
+    var apiTypeVal = p.api_type || 'responses';
+    var html = '<div class="lpai-admin-provider" data-pid="' + pid + '">';
+    html += '<div class="lpai-admin-provider-header">';
+    html += '<strong>' + (p.label || pid) + '</strong>';
+    html += '<span class="lpai-admin-key-status ' + (p.has_key ? 'lpai-admin-key-ok' : 'lpai-admin-key-missing') + '">' + (p.has_key ? 'Key configured' : 'No API key') + '</span>';
+    html += '<button type="button" class="lpai-admin-remove-btn" data-pid="' + pid + '" title="Remove provider">&times;</button>';
+    html += '</div>';
+    html += '<div class="lpai-admin-field-row">';
+    html += '<div class="lpai-admin-field lpai-admin-field-half"><label>Provider ID</label><input type="text" class="lpai-admin-input lpai-admin-pid" value="' + pid + '" readonly></div>';
+    html += '<div class="lpai-admin-field lpai-admin-field-half"><label>Display Label</label><input type="text" class="lpai-admin-input lpai-admin-label" data-pid="' + pid + '" value="' + (p.label || '') + '"></div>';
+    html += '</div>';
+    html += '<div class="lpai-admin-field"><label>API Protocol</label><select class="lpai-admin-input lpai-admin-apitype" data-pid="' + pid + '">';
+    for (var t = 0; t < apiTypes.length; t++) {
+        html += '<option value="' + apiTypes[t].value + '"' + (apiTypeVal === apiTypes[t].value ? ' selected' : '') + '>' + apiTypes[t].label + '</option>';
+    }
+    html += '</select></div>';
+    html += '<div class="lpai-admin-field"><label>API Endpoint URL</label><input type="text" class="lpai-admin-input lpai-admin-apiurl" data-pid="' + pid + '" value="' + (p.api_url || '') + '" placeholder="https://api.openai.com/v1/responses"></div>';
+    html += '<div class="lpai-admin-field"><label>API Key</label><input type="password" class="lpai-admin-input lpai-admin-apikey" data-pid="' + pid + '" placeholder="' + (p.api_key_masked || 'Enter API key...') + '"></div>';
+    html += '<div class="lpai-admin-field"><label>Default Model</label><input type="text" class="lpai-admin-input lpai-admin-model" data-pid="' + pid + '" value="' + (p.model || '') + '"></div>';
+    html += '<div class="lpai-admin-field"><label>Available Models (comma-separated)</label><input type="text" class="lpai-admin-input lpai-admin-models" data-pid="' + pid + '" value="' + ((p.models || []).join(', ')) + '"></div>';
+    html += '<div class="lpai-admin-field"><label><input type="checkbox" class="lpai-admin-reasoning-cb" data-pid="' + pid + '"' + (p.supports_reasoning !== false ? ' checked' : '') + '> Supports reasoning/verbosity controls</label></div>';
+    var unsupRaw = p.unsupported_params || {};
+    // Normalize: legacy flat array → apply to all models
+    var unsupMap = {};
+    if (Array.isArray(unsupRaw)) {
+        var pModels = p.models || [p.model || ''];
+        for (var um = 0; um < pModels.length; um++) { if (pModels[um]) unsupMap[pModels[um]] = unsupRaw; }
+    } else {
+        unsupMap = unsupRaw;
+    }
+    var models = p.models || [p.model || ''];
+    html += '<div class="lpai-admin-field"><label>Unsupported parameters (per model):</label>';
+    html += '<div class="lpai-admin-unsup-models" data-pid="' + pid + '">';
+    for (var mi = 0; mi < models.length; mi++) {
+        var m = models[mi]; if (!m) continue;
+        var mu = unsupMap[m] || [];
+        html += '<div class="lpai-admin-unsup-row" data-model="' + m + '"><span class="lpai-admin-unsup-model">' + m + '</span>';
+        html += ' <label class="lpai-admin-unsup"><input type="checkbox" class="lpai-admin-unsup-cb" data-param="temperature"' + (mu.indexOf('temperature') >= 0 ? ' checked' : '') + '> temperature</label>';
+        html += ' <label class="lpai-admin-unsup"><input type="checkbox" class="lpai-admin-unsup-cb" data-param="reasoning_none"' + (mu.indexOf('reasoning_none') >= 0 ? ' checked' : '') + '> reasoning=none</label>';
+        html += '</div>';
+    }
+    html += '</div></div>';
+    var pricing = p.pricing || {};
+    html += '<div class="lpai-admin-field"><label>Token Pricing (USD per 1M tokens)</label>';
+    html += '<div class="lpai-admin-pricing-models" data-pid="' + pid + '">';
+    for (var pi = 0; pi < models.length; pi++) {
+        var pm = models[pi]; if (!pm) continue;
+        var mp = pricing[pm] || {};
+        html += '<div class="lpai-admin-pricing-row" data-model="' + pm + '">';
+        html += '<span class="lpai-admin-unsup-model">' + pm + '</span>';
+        html += '<div class="lpai-admin-field-row" style="flex:1">';
+        html += '<div class="lpai-admin-field-half"><input type="text" class="lpai-admin-input lpai-admin-price-in" value="' + (mp.input || '') + '" placeholder="Input"></div>';
+        html += '<div class="lpai-admin-field-half"><input type="text" class="lpai-admin-input lpai-admin-price-out" value="' + (mp.output || '') + '" placeholder="Output"></div>';
+        html += '</div></div>';
+    }
+    html += '</div></div>';
+    html += '</div>';
+    return html;
+}
+
 function lpai_render_admin(root, data, urlSave, token) {
     var providers = data.providers || {};
     var settings = data.settings || {};
@@ -2145,26 +2440,19 @@ function lpai_render_admin(root, data, urlSave, token) {
     html += '<h3 class="lpai-admin-title">Usage Overview</h3>';
     html += '<div class="lpai-admin-stats">';
     html += '<div class="lpai-admin-stat"><span class="lpai-admin-stat-num">' + (usage.total_users || 0) + '</span><span class="lpai-admin-stat-label">Total Users</span></div>';
-    html += '<div class="lpai-admin-stat"><span class="lpai-admin-stat-num">' + (usage.active_users || 0) + '</span><span class="lpai-admin-stat-label">GenIA Users</span></div>';
+    html += '<div class="lpai-admin-stat"><span class="lpai-admin-stat-num">' + (usage.active_users || 0) + '</span><span class="lpai-admin-stat-label">Configured Users</span></div>';
     html += '</div></div>';
 
     // Providers
     html += '<div class="lpai-admin-section">';
     html += '<h3 class="lpai-admin-title">AI Providers</h3>';
+    html += '<div id="lpai-admin-providers">';
     var pids = Object.keys(providers);
     for (var i = 0; i < pids.length; i++) {
-        var pid = pids[i];
-        var p = providers[pid];
-        html += '<div class="lpai-admin-provider" data-pid="' + pid + '">';
-        html += '<div class="lpai-admin-provider-header">';
-        html += '<strong>' + (p.label || pid) + '</strong>';
-        html += '<span class="lpai-admin-key-status ' + (p.has_key ? 'lpai-admin-key-ok' : 'lpai-admin-key-missing') + '">' + (p.has_key ? 'Key configured' : 'No API key') + '</span>';
-        html += '</div>';
-        html += '<div class="lpai-admin-field"><label>API Key</label><input type="password" class="lpai-admin-input lpai-admin-apikey" data-pid="' + pid + '" placeholder="' + (p.api_key_masked || 'Enter API key...') + '"></div>';
-        html += '<div class="lpai-admin-field"><label>Model</label><input type="text" class="lpai-admin-input lpai-admin-model" data-pid="' + pid + '" value="' + (p.model || '') + '"></div>';
-        html += '<div class="lpai-admin-field"><label>Models (comma-separated)</label><input type="text" class="lpai-admin-input lpai-admin-models" data-pid="' + pid + '" value="' + ((p.models || []).join(', ')) + '"></div>';
-        html += '</div>';
+        html += lpai_admin_provider_html(pids[i], providers[pids[i]]);
     }
+    html += '</div>';
+    html += '<button type="button" id="lpai-admin-add-provider" class="lpai-admin-add-btn">+ Add Provider</button>';
     html += '</div>';
 
     // Global Settings
@@ -2177,6 +2465,33 @@ function lpai_render_admin(root, data, urlSave, token) {
     var langs = ['Portuguese', 'English', 'Spanish', 'French', 'German', 'Italian'];
     for (var li = 0; li < langs.length; li++) {
         html += '<option value="' + langs[li] + '"' + (settings.default_language === langs[li] ? ' selected' : '') + '>' + langs[li] + '</option>';
+    }
+    html += '</select></div>';
+    html += '<div class="lpai-admin-field"><label>Default AI Provider</label><select id="lpai-admin-default-provider" class="lpai-admin-input">';
+    html += '<option value=""' + (!settings.default_provider ? ' selected' : '') + '>First available</option>';
+    for (var di = 0; di < pids.length; di++) {
+        var dp = providers[pids[di]];
+        html += '<option value="' + pids[di] + '"' + (settings.default_provider === pids[di] ? ' selected' : '') + '>' + (dp.label || pids[di]) + '</option>';
+    }
+    html += '</select></div>';
+
+    // Follow-up detection provider + model
+    var fuProvider = settings.followup_provider || '';
+    var fuModel = settings.followup_model || '';
+    html += '<div class="lpai-admin-field"><label>Follow-up Detection — Provider</label><select id="lpai-admin-fu-provider" class="lpai-admin-input">';
+    html += '<option value=""' + (!fuProvider ? ' selected' : '') + '>Same as user selection</option>';
+    for (var fi = 0; fi < pids.length; fi++) {
+        var fp = providers[pids[fi]];
+        html += '<option value="' + pids[fi] + '"' + (fuProvider === pids[fi] ? ' selected' : '') + '>' + (fp.label || pids[fi]) + '</option>';
+    }
+    html += '</select></div>';
+    html += '<div class="lpai-admin-field"><label>Follow-up Detection — Model</label><select id="lpai-admin-fu-model" class="lpai-admin-input">';
+    html += '<option value="">Default for provider</option>';
+    if (fuProvider && providers[fuProvider]) {
+        var fuModels = providers[fuProvider].models || [];
+        for (var fm = 0; fm < fuModels.length; fm++) {
+            html += '<option value="' + fuModels[fm] + '"' + (fuModel === fuModels[fm] ? ' selected' : '') + '>' + fuModels[fm] + '</option>';
+        }
     }
     html += '</select></div></div>';
 
@@ -2207,6 +2522,96 @@ function lpai_render_admin(root, data, urlSave, token) {
 
     root.innerHTML = html;
 
+    // Add provider handler
+    document.getElementById('lpai-admin-add-provider').onclick = function() {
+        var presetMenu = document.getElementById('lpai-admin-preset-menu');
+        if (presetMenu) { presetMenu.remove(); return; }
+
+        var menu = document.createElement('div');
+        menu.id = 'lpai-admin-preset-menu';
+        menu.className = 'lpai-admin-preset-menu';
+        var presets = [
+            { key: 'openai_responses', label: 'OpenAI (Responses API)' },
+            { key: 'xai_responses', label: 'xAI / Grok (Responses API)' },
+            { key: 'anthropic', label: 'Anthropic / Claude' },
+            { key: 'ollama', label: 'Ollama (Local)' },
+            { key: 'custom', label: 'Custom Provider' },
+        ];
+        for (var pi = 0; pi < presets.length; pi++) {
+            (function(preset) {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'lpai-admin-preset-item';
+                btn.textContent = preset.label;
+                btn.onclick = function() {
+                    menu.remove();
+                    var tpl = lpai_admin_api_presets[preset.key];
+                    var newPid = prompt('Provider ID (lowercase, no spaces):', preset.key.replace('_responses', ''));
+                    if (!newPid) return;
+                    newPid = newPid.toLowerCase().replace(/[^a-z0-9_]/g, '');
+                    if (!newPid) return;
+                    var existing = document.querySelector('.lpai-admin-provider[data-pid="' + newPid + '"]');
+                    if (existing) { alert('Provider ID "' + newPid + '" already exists'); return; }
+                    var container = document.getElementById('lpai-admin-providers');
+                    var newP = { label: tpl.label, api_type: tpl.api_type, api_url: tpl.api_url, model: tpl.model, models: tpl.models, supports_reasoning: tpl.supports_reasoning !== false, has_key: false, api_key_masked: '' };
+                    container.insertAdjacentHTML('beforeend', lpai_admin_provider_html(newPid, newP));
+                    // Bind remove handler for new entry
+                    var removeBtn = container.querySelector('.lpai-admin-provider[data-pid="' + newPid + '"] .lpai-admin-remove-btn');
+                    if (removeBtn) removeBtn.onclick = function() {
+                        if (confirm('Remove provider "' + newPid + '"?')) this.closest('.lpai-admin-provider').remove();
+                    };
+                    // Update provider dropdowns
+                    ['lpai-admin-default-provider', 'lpai-admin-fu-provider'].forEach(function(id) {
+                        var sel = document.getElementById(id);
+                        if (sel) {
+                            var opt = document.createElement('option');
+                            opt.value = newPid;
+                            opt.textContent = tpl.label;
+                            sel.appendChild(opt);
+                        }
+                    });
+                };
+                menu.appendChild(btn);
+            })(presets[pi]);
+        }
+        this.parentNode.insertBefore(menu, this.nextSibling);
+    };
+
+    // Remove provider handlers
+    document.querySelectorAll('.lpai-admin-remove-btn').forEach(function(btn) {
+        btn.onclick = function() {
+            var pid = this.dataset.pid;
+            if (confirm('Remove provider "' + pid + '"?')) {
+                this.closest('.lpai-admin-provider').remove();
+                // Remove from provider dropdowns
+                ['#lpai-admin-default-provider', '#lpai-admin-fu-provider'].forEach(function(sel) {
+                    var opt = document.querySelector(sel + ' option[value="' + pid + '"]');
+                    if (opt) opt.remove();
+                });
+            }
+        };
+    });
+
+    // Follow-up provider → update model dropdown
+    document.getElementById('lpai-admin-fu-provider').onchange = function() {
+        var sel = this.value;
+        var mSel = document.getElementById('lpai-admin-fu-model');
+        mSel.innerHTML = '<option value="">Default for provider</option>';
+        if (sel) {
+            // Read models from the provider card
+            var card = document.querySelector('.lpai-admin-provider[data-pid="' + sel + '"]');
+            if (card) {
+                var modelsVal = card.querySelector('.lpai-admin-models');
+                var models = modelsVal ? modelsVal.value.split(',').map(function(m){return m.trim();}).filter(Boolean) : [];
+                for (var i = 0; i < models.length; i++) {
+                    var o = document.createElement('option');
+                    o.value = models[i]; o.textContent = models[i];
+                    mSel.appendChild(o);
+                }
+            }
+        }
+    };
+
     // Save handler
     document.getElementById('lpai-admin-save').onclick = function() {
         var saveData = { providers: {}, settings: {}, features: {} };
@@ -2214,19 +2619,47 @@ function lpai_render_admin(root, data, urlSave, token) {
         // Collect provider data
         document.querySelectorAll('.lpai-admin-provider').forEach(function(el) {
             var pid = el.dataset.pid;
-            var orig = providers[pid] || {};
             var keyInput = el.querySelector('.lpai-admin-apikey');
+            var labelInput = el.querySelector('.lpai-admin-label');
+            var apiTypeInput = el.querySelector('.lpai-admin-apitype');
+            var apiUrlInput = el.querySelector('.lpai-admin-apiurl');
             var modelInput = el.querySelector('.lpai-admin-model');
             var modelsInput = el.querySelector('.lpai-admin-models');
+            var reasoningCb = el.querySelector('.lpai-admin-reasoning-cb');
+
+            var unsupported = {};
+            el.querySelectorAll('.lpai-admin-unsup-row').forEach(function(row) {
+                var mdl = row.dataset.model;
+                var params = [];
+                row.querySelectorAll('.lpai-admin-unsup-cb:checked').forEach(function(cb) {
+                    params.push(cb.dataset.param);
+                });
+                if (params.length > 0) unsupported[mdl] = params;
+            });
+
+            var pricing = {};
+            el.querySelectorAll('.lpai-admin-pricing-row').forEach(function(row) {
+                var mdl = row.dataset.model;
+                var pIn = row.querySelector('.lpai-admin-price-in');
+                var pOut = row.querySelector('.lpai-admin-price-out');
+                if ((pIn && pIn.value) || (pOut && pOut.value)) {
+                    pricing[mdl] = {
+                        input: parseFloat(pIn ? pIn.value : 0) || 0,
+                        output: parseFloat(pOut ? pOut.value : 0) || 0,
+                    };
+                }
+            });
 
             saveData.providers[pid] = {
-                label: orig.label || pid,
-                api_url: orig.api_url || '',
-                api_type: orig.api_type || 'responses',
-                api_key: keyInput.value || '',
-                model: modelInput.value || orig.model || '',
-                models: (modelsInput.value || '').split(',').map(function(m) { return m.trim(); }).filter(Boolean),
-                supports_reasoning: orig.supports_reasoning !== undefined ? orig.supports_reasoning : true,
+                label: labelInput ? labelInput.value : pid,
+                api_url: apiUrlInput ? apiUrlInput.value : '',
+                api_type: apiTypeInput ? apiTypeInput.value : 'responses',
+                api_key: keyInput ? keyInput.value : '',
+                model: modelInput ? modelInput.value : '',
+                models: (modelsInput ? modelsInput.value : '').split(',').map(function(m) { return m.trim(); }).filter(Boolean),
+                supports_reasoning: reasoningCb ? reasoningCb.checked : true,
+                unsupported_params: unsupported,
+                pricing: pricing,
             };
         });
 
@@ -2236,6 +2669,9 @@ function lpai_render_admin(root, data, urlSave, token) {
             temperature: parseFloat(document.getElementById('lpai-admin-temperature').value) || 0.5,
             rate_limit: parseInt(document.getElementById('lpai-admin-rate-limit').value) || 3,
             default_language: document.getElementById('lpai-admin-language').value || 'English',
+            default_provider: document.getElementById('lpai-admin-default-provider').value || '',
+            followup_provider: document.getElementById('lpai-admin-fu-provider').value || '',
+            followup_model: document.getElementById('lpai-admin-fu-model').value || '',
         };
 
         // Collect features
@@ -2560,10 +2996,9 @@ function lpai_suggest_send_time(clickedBtn) {
         if (data.status === 'success' && data.result) {
             try {
                 var info = JSON.parse(data.result.replace(/```json\n?|\n?```/g, '').trim());
-                lpai_show_send_time_badge(info);
+                lpai_show_send_time_badge(info, data.model, data.tokens);
             } catch (e) {
-                // If not JSON, show as text
-                lpai_show_send_time_badge({ suggestion: data.result });
+                lpai_show_send_time_badge({ suggestion: data.result }, data.model, data.tokens);
             }
         }
     }).catch(function(err) {
@@ -2572,7 +3007,7 @@ function lpai_suggest_send_time(clickedBtn) {
     });
 }
 
-function lpai_show_send_time_badge(info) {
+function lpai_show_send_time_badge(info, model, tokens) {
     var existing = document.getElementById('lpai-send-time-badge');
     if (existing) existing.remove();
 
@@ -2583,11 +3018,14 @@ function lpai_show_send_time_badge(info) {
     var text = info.suggestion || ('Send ' + (info.day || 'today') + ' at ' + (info.time || ''));
     var reason = info.reason || '';
 
+    var usageLabel = lpai_format_usage_label(model || lpai_options.model, tokens);
+
     badge.innerHTML = '<div class="lpai-send-time-content">' +
         '<span class="lpai-send-time-icon">&#128337;</span>' +
         '<span class="lpai-send-time-text">' + text + '</span>' +
         (reason ? '<span class="lpai-send-time-reason">' + reason + '</span>' : '') +
         '</div>' +
+        (usageLabel ? '<div class="lpai-usage-footer">' + usageLabel + '</div>' : '') +
         '<button type="button" class="lpai-send-time-close" onclick="this.parentNode.remove()">&times;</button>';
 
     var bar = document.getElementById('lpai-qa-bar-compose');
@@ -2600,6 +3038,10 @@ function lpai_show_send_time_badge(info) {
 // Follow-up Reminders (#3)
 // ========================================
 function lpai_init_followup_detection() {
+    // Check user preference
+    var sp = rcmail.env.lpai_user_prefs || {};
+    if (sp.followup_check === 0 || sp.followup_check === '0') return;
+
     var providers = rcmail.env.lpai_providers || {};
     if (Object.keys(providers).length === 0) return;
 
@@ -2611,30 +3053,35 @@ function lpai_init_followup_detection() {
     if (!msgPart) return;
 
     var bodyText = msgPart.innerText || msgPart.textContent || '';
-    if (bodyText.trim().length < 20) return;
+    if (bodyText.trim().length < 5) return;
 
-    // Quick client-side pre-check: look for common follow-up indicators
-    var indicators = [
-        /\bplease\s+(reply|respond|confirm|let\s+me\s+know|get\s+back)/i,
-        /\b(can\s+you|could\s+you|would\s+you|will\s+you)\b/i,
-        /\b(by\s+(monday|tuesday|wednesday|thursday|friday|tomorrow|end\s+of|eod|eow|cop))/i,
-        /\b(deadline|urgente?|asap|as\s+soon\s+as)\b/i,
-        /\b(aguardo|responda|confirme|por\s+favor|preciso|urgente)\b/i,
-        /\?\s*$/m
-    ];
+    var msgUid = rcmail.env.uid || '';
+    var mbox = rcmail.env.mailbox || '';
+    var cacheKey = 'lpai_fu_' + mbox + '_' + msgUid;
 
-    var hasIndicator = false;
-    for (var i = 0; i < indicators.length; i++) {
-        if (indicators[i].test(bodyText)) {
-            hasIndicator = true;
-            break;
+    // Check cache first
+    try {
+        var cached = sessionStorage.getItem(cacheKey);
+        if (cached) {
+            var c = JSON.parse(cached);
+            lpai_show_email_analysis(c.info, c.model, c.tokens, true);
+            return;
         }
-    }
+    } catch (e) {}
 
-    if (!hasIndicator) return;
+    // Show running indicator
+    lpai_followup_indicator(true);
 
     // Call AI to confirm and get details
     lpai_init_provider();
+
+    // Use admin-configured follow-up provider/model, or fall back to user selection
+    var fuProvider = rcmail.env.lpai_followup_provider || lpai_options.provider;
+    var fuModel = rcmail.env.lpai_followup_model || '';
+    if (!fuModel && fuProvider) {
+        var fp = (rcmail.env.lpai_providers || {})[fuProvider];
+        fuModel = fp ? fp.default_model : lpai_options.model;
+    }
 
     var postData = {
         _action: 'plugin.lifeprisma_ai_request',
@@ -2648,11 +3095,11 @@ function lpai_init_followup_detection() {
         sender_name: '',
         reasoning: 'none',
         verbosity: 'low',
-        provider: lpai_options.provider,
-        model: lpai_options.model,
+        provider: fuProvider,
+        model: fuModel,
         history: '[]',
-        msg_uid: rcmail.env.uid || '',
-        mbox: rcmail.env.mailbox || '',
+        msg_uid: msgUid,
+        mbox: mbox,
         view_context: 'read',
         _token: rcmail.env.request_token
     };
@@ -2667,18 +3114,112 @@ function lpai_init_followup_detection() {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: encoded.join('&')
     }).then(function(r) { return r.json(); }).then(function(data) {
+        lpai_followup_indicator(false);
         if (data.status === 'success' && data.result) {
             try {
                 var info = JSON.parse(data.result.replace(/```json\n?|\n?```/g, '').trim());
-                if (info.needs_followup) {
-                    lpai_show_followup_banner(info);
-                }
+                // Cache the result
+                try { sessionStorage.setItem(cacheKey, JSON.stringify({ info: info, model: data.model, tokens: data.tokens })); } catch (e) {}
+                lpai_show_email_analysis(info, data.model, data.tokens);
             } catch (e) {}
+        } else {
+            // Cache negative result
+            try { sessionStorage.setItem(cacheKey, JSON.stringify({ info: {}, model: '', tokens: null })); } catch (e) {}
+            lpai_followup_indicator_ok();
         }
-    }).catch(function() {});
+    }).catch(function() {
+        lpai_followup_indicator(false);
+    });
 }
 
-function lpai_show_followup_banner(info) {
+function lpai_followup_indicator(show) {
+    var label = document.querySelector('.lpai-qa-label');
+    if (!label) return;
+    var dot = label.querySelector('.lpai-fu-dot');
+    if (show && !dot) {
+        dot = document.createElement('span');
+        dot.className = 'lpai-fu-dot';
+        dot.title = 'Analyzing email...';
+        label.appendChild(dot);
+    } else if (!show && dot) {
+        dot.remove();
+    }
+}
+
+function lpai_followup_indicator_ok() {
+    var label = document.querySelector('.lpai-qa-label');
+    if (!label) return;
+    // Remove pulsing dot if present
+    var dot = label.querySelector('.lpai-fu-dot');
+    if (dot) dot.remove();
+    // Add checkmark if not already there
+    if (label.querySelector('.lpai-fu-ok')) return;
+    var ok = document.createElement('span');
+    ok.className = 'lpai-fu-ok';
+    ok.title = 'Email OK — no follow-up, spam, or scam detected';
+    ok.textContent = '\u2713';
+    label.appendChild(ok);
+}
+
+function lpai_show_email_analysis(info, model, tokens, fromCache) {
+    if (!info) { lpai_followup_indicator_ok(); return; }
+    var hasAlert = false;
+
+    if (info.is_spam || info.is_scam) {
+        lpai_show_alert_banner(info, model, tokens, fromCache);
+        hasAlert = true;
+    }
+    if (info.needs_followup) {
+        lpai_show_followup_banner(info, model, tokens, fromCache);
+        hasAlert = true;
+    }
+    if (!hasAlert) {
+        lpai_followup_indicator_ok();
+    }
+}
+
+function lpai_show_alert_banner(info, model, tokens, fromCache) {
+    var existing = document.getElementById('lpai-alert-banner');
+    if (existing) existing.remove();
+
+    var isScam = info.is_scam;
+    var bannerClass = isScam ? 'lpai-followup-high' : 'lpai-alert-spam';
+    var icon = isScam ? '&#9888;' : '&#9940;';
+    var title = isScam ? 'Possible scam/phishing' : 'Possible spam';
+    var reason = isScam ? (info.scam_reason || '') : '';
+
+    var banner = document.createElement('div');
+    banner.id = 'lpai-alert-banner';
+    banner.className = 'lpai-followup-banner ' + bannerClass;
+
+    var html = '<div class="lpai-followup-content">';
+    html += '<span class="lpai-followup-icon">' + icon + '</span>';
+    html += '<div class="lpai-followup-info">';
+    html += '<strong>' + title + '</strong>';
+    if (reason) html += ' &mdash; ' + reason;
+    if (info.is_spam && info.is_scam) html += '<br><span class="lpai-followup-deadline">Also detected as spam</span>';
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="lpai-followup-actions">';
+    if (info.is_spam) {
+        html += '<button type="button" class="lpai-qa-btn lpai-alert-spam-btn" onclick="rcmail.command(\'move\',\'Junk\')">Move to Spam</button>';
+    }
+    html += '<button type="button" class="lpai-followup-dismiss" onclick="this.parentNode.parentNode.remove()">Dismiss</button>';
+    html += '</div>';
+    var usageLabel = lpai_format_usage_label(model, tokens);
+    if (fromCache) usageLabel = (usageLabel ? usageLabel + ' · ' : '') + 'Cached';
+    if (usageLabel) {
+        html += '<div class="lpai-usage-footer">' + usageLabel + '</div>';
+    }
+
+    banner.innerHTML = html;
+    var msgBody = document.getElementById('messagebody');
+    if (msgBody) {
+        msgBody.parentNode.insertBefore(banner, msgBody);
+    }
+}
+
+function lpai_show_followup_banner(info, model, tokens, fromCache) {
     var existing = document.getElementById('lpai-followup-banner');
     if (existing) existing.remove();
 
@@ -2702,6 +3243,11 @@ function lpai_show_followup_banner(info) {
     html += '<button type="button" class="lpai-qa-btn lpai-qa-reply" onclick="try{localStorage.setItem(\'lpai_pending_reply\',\'1\')}catch(e){}rcmail.command(\'reply\')">Reply Now</button>';
     html += '<button type="button" class="lpai-followup-dismiss" onclick="this.parentNode.parentNode.remove()">Dismiss</button>';
     html += '</div>';
+    var usageLabel = lpai_format_usage_label(model || lpai_options.model, tokens);
+    if (fromCache) usageLabel = (usageLabel ? usageLabel + ' · ' : '') + 'Cached';
+    if (usageLabel) {
+        html += '<div class="lpai-usage-footer">' + usageLabel + '</div>';
+    }
 
     banner.innerHTML = html;
 

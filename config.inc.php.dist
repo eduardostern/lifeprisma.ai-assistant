@@ -33,6 +33,9 @@ $config['lifeprisma_ai_providers'] = [
         'api_key'  => '',                                        // Your OpenAI API key (https://platform.openai.com/api-keys)
         'model'    => 'gpt-5.4',                                 // Default model
         'models'   => ['gpt-5.4', 'gpt-4.1', 'gpt-4o'],        // Available models for this provider
+        // 'unsupported_params' => ['temperature', 'reasoning_none'],  // Params the model can't receive
+        //   temperature    — model doesn't accept temperature (e.g. reasoning-only models like gpt-5-nano)
+        //   reasoning_none — model doesn't accept reasoning.effort="none", uses "minimal" instead
     ],
     'xai' => [
         'label'    => 'Grok',

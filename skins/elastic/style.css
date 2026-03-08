@@ -1056,21 +1056,28 @@ html.dark-mode .lpai-qa-verdict-danger .lpai-qa-result-header,
 /* ============================
    Admin Panel
    ============================ */
+/* Hide Roundcube's default save button when admin panel is shown */
+body:has(#lpai-admin-root) .formbuttons { display: none; }
+#lpai-admin-root { width: 100%; }
+
 .lpai-admin {
-    max-width: 700px;
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 16px 20px;
 }
 
 .lpai-admin-section {
-    margin-bottom: 24px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid #eee;
+    margin-bottom: 28px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #e8ecee;
 }
+.lpai-admin-section:last-of-type { border-bottom: none; }
 
 .lpai-admin-title {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 700;
     color: #2c363a;
-    margin: 0 0 12px 0;
+    margin: 0 0 14px 0;
 }
 
 .lpai-admin-stats {
@@ -1101,17 +1108,20 @@ html.dark-mode .lpai-qa-verdict-danger .lpai-qa-result-header,
 }
 
 .lpai-admin-provider {
-    border: 1px solid #ddd;
-    border-radius: 0.25rem;
-    padding: 12px;
-    margin-bottom: 12px;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 14px;
+    background: #fafbfc;
 }
 
 .lpai-admin-provider-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 10px;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
 }
 
 .lpai-admin-key-status {
@@ -1132,28 +1142,43 @@ html.dark-mode .lpai-qa-verdict-danger .lpai-qa-result-header,
 }
 
 .lpai-admin-field {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
 }
 
 .lpai-admin-field label {
-    font-size: 13px;
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7b87;
+    margin-bottom: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.lpai-admin-field label input[type="checkbox"] {
+    margin-right: 4px;
+    vertical-align: middle;
+}
+.lpai-admin-field label:has(input[type="checkbox"]) {
+    text-transform: none;
     font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0;
     color: #555;
-    min-width: 140px;
 }
 
 .lpai-admin-input {
-    flex: 1;
-    padding: 6px 10px;
+    width: 100%;
+    padding: 7px 10px;
     border: 1px solid #ced4da;
     border-radius: 0.25rem;
     font-size: 13px;
     font-family: inherit;
     color: #2c363a;
-    max-width: 350px;
+    box-sizing: border-box;
+}
+
+select.lpai-admin-input {
+    appearance: auto;
 }
 
 .lpai-admin-input:focus {
@@ -1187,17 +1212,20 @@ html.dark-mode .lpai-qa-verdict-danger .lpai-qa-result-header,
 
 .lpai-admin-actions {
     display: flex;
+    justify-content: center;
     align-items: center;
     gap: 12px;
-    margin-top: 16px;
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid #e8ecee;
 }
 
 .lpai-admin-save-btn {
-    padding: 8px 24px;
+    padding: 10px 40px;
     background: #37beff;
     color: #fff;
     border: 1px solid #37beff;
-    border-radius: 0.25rem;
+    border-radius: 8px;
     font-size: 14px;
     font-weight: 600;
     cursor: pointer;
@@ -1231,6 +1259,12 @@ html.dark-mode .lpai-admin-title,
 
 html.dark-mode .lpai-admin-section,
 .dark-mode .lpai-admin-section { border-bottom-color: #4d6066; }
+html.dark-mode .lpai-admin-actions,
+.dark-mode .lpai-admin-actions { border-top-color: #4d6066; }
+html.dark-mode .lpai-admin-provider-header,
+.dark-mode .lpai-admin-provider-header { border-bottom-color: #4d6066; }
+html.dark-mode .lpai-admin-field label,
+.dark-mode .lpai-admin-field label { color: #7c949c; }
 
 html.dark-mode .lpai-admin-stat,
 .dark-mode .lpai-admin-stat { background: #2c373a; }
@@ -1239,7 +1273,7 @@ html.dark-mode .lpai-admin-stat-label,
 .dark-mode .lpai-admin-stat-label { color: #7c949c; }
 
 html.dark-mode .lpai-admin-provider,
-.dark-mode .lpai-admin-provider { border-color: #4d6066; }
+.dark-mode .lpai-admin-provider { border-color: #4d6066; background: #1a2226; }
 
 html.dark-mode .lpai-admin-input,
 .dark-mode .lpai-admin-input { background: #21292c; border-color: #4d6066; color: #c5d1d3; }
@@ -1363,14 +1397,25 @@ html.dark-mode .lpai-send-time-text,
    ============================ */
 .lpai-followup-banner {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
     padding: 10px 14px;
     margin: 6px 10px;
     border-radius: 0.25rem;
     font-size: 13px;
     animation: lpai-slide-up 0.25s ease;
-    gap: 12px;
+    gap: 8px 12px;
+    position: relative;
+}
+.lpai-followup-banner > .lpai-usage-footer {
+    position: absolute;
+    bottom: -9px; right: 12px;
+    background: inherit;
+    padding: 0 6px;
+    border: none;
+    margin: 0;
+    font-size: 10px;
+    opacity: .7;
 }
 
 .lpai-followup-high {
@@ -1389,6 +1434,12 @@ html.dark-mode .lpai-send-time-text,
     background: #e8f5e9;
     border: 1px solid #c8e6c9;
     color: #2e7d32;
+}
+
+.lpai-alert-spam {
+    background: #f3e5f5;
+    border: 1px solid #ce93d8;
+    color: #6a1b9a;
 }
 
 .lpai-followup-content {
@@ -1456,6 +1507,10 @@ html.dark-mode .lpai-followup-medium,
     color: #ffd452;
 }
 
+html.dark-mode .lpai-alert-spam,
+.dark-mode .lpai-alert-spam {
+    background: #2d1b36; border-color: #7b1fa2; color: #ce93d8;
+}
 html.dark-mode .lpai-followup-low,
 .dark-mode .lpai-followup-low {
     background: #1b3a1b;
@@ -1479,4 +1534,188 @@ html.dark-mode .lpai-followup-low,
     .lpai-qa-bar { gap: 4px; padding: 5px 6px; }
     .lpai-qa-btn { padding: 3px 8px; font-size: 11px; }
     .lpai-qa-label { font-size: 11px; }
+}
+
+/* Admin provider management */
+.lpai-admin-provider-header { position: relative; }
+.lpai-admin-remove-btn {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: #e74c3c; font-size: 20px; cursor: pointer;
+    padding: 0 4px; line-height: 1; opacity: .6;
+}
+.lpai-admin-remove-btn:hover { opacity: 1; }
+.lpai-admin-unsup { font-size: 12px; margin-left: 8px; font-weight: normal; }
+.lpai-admin-unsup-row, .lpai-admin-pricing-row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+.lpai-admin-unsup-model { font-size: 12px; font-weight: 600; color: #37beff; min-width: 120px; }
+.lpai-admin-field-row { display: flex; gap: 12px; }
+.lpai-admin-field-half { flex: 1; }
+.lpai-admin-add-btn {
+    display: inline-block; padding: 8px 16px; margin-top: 8px;
+    background: #f0f7ff; color: #37beff; border: 1px dashed #37beff;
+    border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+}
+.lpai-admin-add-btn:hover { background: #e0f0ff; }
+.lpai-admin-preset-menu {
+    display: flex; flex-direction: column; gap: 2px;
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+    padding: 6px; margin-top: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.1);
+}
+.lpai-admin-preset-item {
+    background: none; border: none; padding: 8px 12px; text-align: left;
+    cursor: pointer; border-radius: 4px; font-size: 13px;
+}
+.lpai-admin-preset-item:hover { background: #f1f5f9; }
+@media (prefers-color-scheme: dark) {
+    .lpai-admin-add-btn { background: #1e293b; color: #37beff; border-color: #37beff; }
+    .lpai-admin-add-btn:hover { background: #293548; }
+    .lpai-admin-preset-menu { background: #1e293b; border-color: #334155; }
+    .lpai-admin-preset-item:hover { background: #334155; }
+    .lpai-admin-remove-btn { color: #f87171; }
+}
+
+/* Follow-up detection indicator */
+.lpai-fu-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    background: #37beff;
+    border-radius: 50%;
+    margin-left: 6px;
+    vertical-align: middle;
+    animation: lpai-pulse 1s ease-in-out infinite;
+}
+@keyframes lpai-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .4; transform: scale(.7); }
+}
+
+/* Spam score badge */
+.lpai-spam-score {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 10px;
+    margin-left: 8px;
+    vertical-align: middle;
+    letter-spacing: 0.2px;
+}
+.lpai-spam-low { background: #e8f5e9; color: #2e7d32; }
+.lpai-spam-med { background: #fff3cd; color: #856404; }
+.lpai-spam-high { background: #fde8e8; color: #c62828; }
+@media (prefers-color-scheme: dark) {
+    .lpai-spam-low { background: #1b3a1b; color: #66bb6a; }
+    .lpai-spam-med { background: #3b3311; color: #ffd54f; }
+    .lpai-spam-high { background: #3b1111; color: #ef9a9a; }
+}
+
+.lpai-fu-ok {
+    display: inline-block;
+    margin-left: 6px;
+    color: #41b849;
+    font-size: 12px;
+    font-weight: 700;
+    vertical-align: middle;
+}
+
+/* Read-view action grid */
+.lpai-read-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 4px 0 8px;
+}
+.lpai-read-lang-bar {
+    display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+}
+.lpai-read-lang-label {
+    font-size: 12px; font-weight: 600; color: #6b7b87; margin-right: 2px;
+}
+.lpai-read-lang-btn {
+    padding: 4px 10px; font-size: 12px; font-weight: 600;
+    border: 1px solid #d0d7de; border-radius: 6px;
+    background: #fff; color: #2c363a; cursor: pointer;
+    transition: all .12s;
+}
+.lpai-read-lang-btn:hover {
+    border-color: #37beff; color: #37beff; background: #edf6ff;
+}
+.lpai-read-lang-btn.active {
+    border-color: #37beff; color: #fff; background: #37beff;
+}
+.lpai-read-btn-row {
+    display: flex; gap: 6px; flex-wrap: wrap;
+}
+.lpai-read-action-btn {
+    flex: 1 1 0; min-width: 0;
+    padding: 10px 6px; font-size: 12px; font-weight: 600;
+    background: #f4f7f9; border: 1px solid #e2e8f0; border-radius: 10px;
+    cursor: pointer; transition: all .15s; text-align: center;
+    color: #2c363a; white-space: nowrap;
+}
+.lpai-read-action-btn:hover {
+    border-color: #37beff; background: #edf6ff;
+}
+.lpai-read-action-btn.active {
+    border-color: #37beff; background: #e0f0ff;
+    box-shadow: 0 0 0 2px rgba(55,190,255,.2);
+}
+.lpai-read-action-icon { font-size: 16px; }
+
+.lpai-read-reply-btn {
+    display: block; width: 100%; padding: 9px 16px; margin-top: 4px;
+    background: none; color: #37beff; font-size: 13px; font-weight: 600;
+    border: 1px dashed #37beff; border-radius: 8px; cursor: pointer;
+    text-align: center; transition: all .15s;
+}
+.lpai-read-reply-btn:hover {
+    background: #edf6ff; border-style: solid;
+}
+
+.lpai-read-followup {
+    display: flex; gap: 6px; align-items: center; margin-top: 8px;
+}
+.lpai-read-followup-input {
+    flex: 1; padding: 8px 12px; font-size: 13px;
+    border: 1px solid #d0d7de; border-radius: 8px;
+    background: #fff; color: #2c363a; outline: none;
+}
+.lpai-read-followup-input:focus {
+    border-color: #37beff; box-shadow: 0 0 0 2px rgba(55,190,255,.15);
+}
+.lpai-read-followup-send {
+    padding: 8px 14px; font-size: 16px; line-height: 1;
+    background: #37beff; color: #fff; border: none; border-radius: 8px;
+    cursor: pointer; transition: background .12s; flex-shrink: 0;
+}
+.lpai-read-followup-send:hover {
+    background: #1fa8e8;
+}
+
+@media (prefers-color-scheme: dark) {
+    .lpai-read-lang-label { color: #6b7b87; }
+    .lpai-read-lang-btn { background: #1a2226; border-color: #3a4a52; color: #c5d1d3; }
+    .lpai-read-lang-btn:hover { background: #1e3040; border-color: #37beff; color: #37beff; }
+    .lpai-read-lang-btn.active { background: #37beff; border-color: #37beff; color: #fff; }
+    .lpai-read-action-btn { background: #1a2226; border-color: #3a4a52; color: #c5d1d3; }
+    .lpai-read-action-btn:hover { background: #1e3040; border-color: #37beff; }
+    .lpai-read-action-btn.active { background: #1a3048; border-color: #37beff; }
+    .lpai-read-reply-btn { color: #37beff; border-color: #37beff; }
+    .lpai-read-reply-btn:hover { background: #1e3040; }
+    .lpai-read-followup-input { background: #1a2226; border-color: #3a4a52; color: #c5d1d3; }
+    .lpai-read-followup-input:focus { border-color: #37beff; }
+}
+
+/* Legacy reply button (hidden in new layout) */
+.lpai-reply-ai-btn { display: none; }
+
+/* Usage footer for result panels */
+.lpai-usage-footer {
+    font-size: 11px;
+    color: #8b9fa7;
+    padding: 4px 12px 6px;
+    text-align: right;
+    border-top: 1px solid rgba(0,0,0,.06);
+    margin-top: 4px;
+}
+@media (prefers-color-scheme: dark) {
+    .lpai-usage-footer { color: #6b7b87; border-top-color: rgba(255,255,255,.08); }
 }

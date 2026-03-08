@@ -40,9 +40,25 @@ class lifeprisma_ai extends rcube_plugin
                     'models' => $p['models'] ?? [$p['model']],
                     'default_model' => $p['model'],
                     'supports_reasoning' => $p['supports_reasoning'] ?? true,
+                    'pricing' => $p['pricing'] ?? [],
                 ];
             }
             $rcmail->output->set_env('lpai_providers', $js_providers);
+
+            // Pass default provider from admin config
+            $admin_config = $this->get_admin_config();
+            $default_provider = $admin_config['default_provider'] ?? '';
+            if ($default_provider && isset($js_providers[$default_provider])) {
+                $rcmail->output->set_env('lpai_default_provider', $default_provider);
+            }
+
+            // Pass follow-up detection provider/model
+            $fu_provider = $admin_config['followup_provider'] ?? '';
+            $fu_model = $admin_config['followup_model'] ?? '';
+            if ($fu_provider && isset($js_providers[$fu_provider])) {
+                $rcmail->output->set_env('lpai_followup_provider', $fu_provider);
+                if ($fu_model) $rcmail->output->set_env('lpai_followup_model', $fu_model);
+            }
 
             // Pass user preferences to JS
             $prefs = $rcmail->user->get_prefs();
@@ -50,6 +66,7 @@ class lifeprisma_ai extends rcube_plugin
                 'language' => $prefs['genia_language'] ?? '',
                 'tone' => $prefs['genia_tone'] ?? '',
                 'auto_draft' => $prefs['genia_auto_draft'] ?? 0,
+                'followup_check' => $prefs['genia_followup_check'] ?? 1,
             ]);
 
             // Pass enabled features to JS
@@ -77,6 +94,7 @@ class lifeprisma_ai extends rcube_plugin
                             'from' => $ctx['from'] ?? '',
                             'date' => $ctx['date'] ?? '',
                             'subject' => $ctx['subject'] ?? '',
+                            'spam_score' => $ctx['spam_score'],
                         ]);
                     }
                 }
@@ -318,6 +336,7 @@ class lifeprisma_ai extends rcube_plugin
 
         $draft_checkbox = new html_checkbox(['name' => '_genia_auto_draft', 'id' => 'genia_auto_draft', 'value' => 1]);
         $smart_compose_checkbox = new html_checkbox(['name' => '_genia_smart_compose', 'id' => 'genia_smart_compose', 'value' => 1]);
+        $followup_checkbox = new html_checkbox(['name' => '_genia_followup_check', 'id' => 'genia_followup_check', 'value' => 1]);
 
         $args['blocks']['genia_general'] = [
             'name' => 'General Settings',
@@ -338,6 +357,10 @@ class lifeprisma_ai extends rcube_plugin
                     'title' => 'Smart Compose (AI autocomplete while typing)',
                     'content' => $smart_compose_checkbox->show($prefs['genia_smart_compose'] ?? 1),
                 ],
+                'genia_followup_check' => [
+                    'title' => 'Auto-detect follow-up reminders when reading emails',
+                    'content' => $followup_checkbox->show($prefs['genia_followup_check'] ?? 1),
+                ],
             ],
         ];
 
@@ -356,6 +379,7 @@ class lifeprisma_ai extends rcube_plugin
         $args['prefs']['genia_tone'] = rcube_utils::get_input_string('_genia_tone', rcube_utils::INPUT_POST);
         $args['prefs']['genia_auto_draft'] = rcube_utils::get_input_string('_genia_auto_draft', rcube_utils::INPUT_POST) ? 1 : 0;
         $args['prefs']['genia_smart_compose'] = rcube_utils::get_input_string('_genia_smart_compose', rcube_utils::INPUT_POST) ? 1 : 0;
+        $args['prefs']['genia_followup_check'] = rcube_utils::get_input_string('_genia_followup_check', rcube_utils::INPUT_POST) ? 1 : 0;
 
         return $args;
     }
@@ -368,7 +392,6 @@ class lifeprisma_ai extends rcube_plugin
             'name' => 'GenIA Administration',
             'options' => [
                 'genia_admin_app' => [
-                    'title' => '',
                     'content' => '<div id="lpai-admin-root" data-url-config="' . htmlspecialchars(rcmail::get_instance()->url('plugin.lifeprisma_ai_admin')) . '" data-url-save="' . htmlspecialchars(rcmail::get_instance()->url('plugin.lifeprisma_ai_admin_save')) . '" data-token="' . htmlspecialchars(rcmail::get_instance()->get_request_token()) . '"></div>' .
                     '<script>if(window.lpai_init_admin)lpai_init_admin();</script>',
                 ],
@@ -391,6 +414,22 @@ class lifeprisma_ai extends rcube_plugin
         $email = $identity['email'] ?? '';
         $username = $rcmail->user->get_username();
         return in_array($email, $admins) || in_array($username, $admins);
+    }
+
+    /**
+     * Get unsupported params for a specific model.
+     * Supports both per-model map and legacy flat array format.
+     */
+    private function get_unsupported_params($provider, $model)
+    {
+        $raw = $provider['unsupported_params'] ?? [];
+        if (empty($raw)) return [];
+        // Per-model map: { "gpt-5-nano": ["temperature", "reasoning_none"] }
+        if (is_array($raw) && !isset($raw[0])) {
+            return $raw[$model] ?? [];
+        }
+        // Legacy flat array: ["temperature", "reasoning_none"] — applies to all models
+        return $raw;
     }
 
     /**
@@ -434,6 +473,9 @@ class lifeprisma_ai extends rcube_plugin
                     'temperature' => $db_config['temperature'] ?? $rcmail->config->get('lifeprisma_ai_temperature', 0.5),
                     'rate_limit' => $db_config['rate_limit'] ?? $rcmail->config->get('lifeprisma_ai_rate_limit', 3),
                     'default_language' => $db_config['default_language'] ?? $rcmail->config->get('lifeprisma_ai_default_language', 'English'),
+                    'default_provider' => $db_config['default_provider'] ?? '',
+                    'followup_provider' => $db_config['followup_provider'] ?? '',
+                    'followup_model' => $db_config['followup_model'] ?? '',
                 ],
                 'features' => $db_config['features'] ?? [
                     'compose' => true, 'rewrite' => true, 'reply' => true,
@@ -496,6 +538,9 @@ class lifeprisma_ai extends rcube_plugin
             if (isset($s['temperature'])) $config['temperature'] = (float) $s['temperature'];
             if (isset($s['rate_limit'])) $config['rate_limit'] = (int) $s['rate_limit'];
             if (isset($s['default_language'])) $config['default_language'] = $s['default_language'];
+            if (isset($s['default_provider'])) $config['default_provider'] = $s['default_provider'];
+            if (isset($s['followup_provider'])) $config['followup_provider'] = $s['followup_provider'];
+            if (isset($s['followup_model'])) $config['followup_model'] = $s['followup_model'];
         }
 
         if (isset($data['features'])) {
@@ -666,6 +711,16 @@ class lifeprisma_ai extends rcube_plugin
     }
 
     /**
+     * Log AI-related events to dedicated genia.log file
+     */
+    private function ai_log($message)
+    {
+        $log_dir = RCUBE_INSTALL_PATH . 'logs/';
+        $line = '[' . date('Y-m-d H:i:s') . '] ' . $message . "\n";
+        @file_put_contents($log_dir . 'genia.log', $line, FILE_APPEND | LOCK_EX);
+    }
+
+    /**
      * Rate limiting — per-user cooldown
      */
     private function check_rate_limit()
@@ -785,8 +840,15 @@ class lifeprisma_ai extends rcube_plugin
                     $input[] = $msg;
                 }
             }
+            // Follow-up: use raw instruction instead of rebuilding the full prompt
+            if (!empty($instruction) && !empty($hist)) {
+                $input[] = ['role' => 'user', 'content' => $instruction];
+            } else {
+                $input[] = ['role' => 'user', 'content' => $user_prompt];
+            }
+        } else {
+            $input[] = ['role' => 'user', 'content' => $user_prompt];
         }
-        $input[] = ['role' => 'user', 'content' => $user_prompt];
 
         $supports_reasoning = $provider['supports_reasoning'] ?? ($api_type === 'responses');
 
@@ -820,20 +882,28 @@ class lifeprisma_ai extends rcube_plugin
                 'max_output_tokens' => $max_tokens,
                 'stream' => true,
             ];
+            $unsupported = $this->get_unsupported_params($provider, $model);
             if ($supports_reasoning) {
-                $payload['reasoning'] = ['effort' => $reasoning];
-                $payload['text'] = ['verbosity' => $verbosity];
+                $effort = $reasoning;
                 if ($reasoning === 'none') {
-                    $payload['temperature'] = $temperature;
+                    // Model can't receive reasoning=none → use minimal
+                    $effort = in_array('reasoning_none', $unsupported) ? 'minimal' : 'none';
                 }
-            } else {
+                if ($effort !== 'none') {
+                    $payload['reasoning'] = ['effort' => $effort];
+                    if ($reasoning !== 'none') {
+                        $payload['text'] = ['verbosity' => $verbosity];
+                    }
+                }
+            }
+            if (!in_array('temperature', $unsupported) && (!isset($payload['reasoning']) || !$supports_reasoning)) {
                 $payload['temperature'] = $temperature;
             }
         }
 
-        // SSE headers
+        // SSE headers — no-store prevents Cloudflare caching/buffering
         header('Content-Type: text/event-stream');
-        header('Cache-Control: no-cache');
+        header('Cache-Control: no-cache, no-store, must-revalidate');
         header('Connection: keep-alive');
         header('X-Accel-Buffering: no');
 
@@ -844,6 +914,8 @@ class lifeprisma_ai extends rcube_plugin
         while (ob_get_level()) {
             ob_end_flush();
         }
+
+        $this->ai_log("[STREAM] action=$action model=$model provider=$provider_id api_type=$api_type user=" . ($rcmail->user->get_username() ?? 'unknown'));
 
         $ch = curl_init($api_url);
 
@@ -857,6 +929,10 @@ class lifeprisma_ai extends rcube_plugin
 
         $stream_api_type = $api_type;
         $stream_buffer = '';
+        $stream_model = $model;
+        $stream_action = $action;
+        $stream_first_chunk = true;
+        $log_fn = function($msg) { rcube::write_log('genia', $msg); };
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($payload),
@@ -864,7 +940,22 @@ class lifeprisma_ai extends rcube_plugin
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_TIMEOUT => 120,
             CURLOPT_SSL_VERIFYPEER => !$is_local,
-            CURLOPT_WRITEFUNCTION => function ($ch, $data) use ($stream_api_type, &$stream_buffer) {
+            CURLOPT_WRITEFUNCTION => function ($ch, $data) use ($stream_api_type, &$stream_buffer, &$stream_first_chunk, $stream_model, $stream_action, $log_fn) {
+                // Detect non-SSE error response (e.g. API returns plain JSON error)
+                if ($stream_first_chunk) {
+                    $stream_first_chunk = false;
+                    $trimmed = trim($data);
+                    if (!empty($trimmed) && $trimmed[0] === '{') {
+                        $err = json_decode($trimmed, true);
+                        if (isset($err['error'])) {
+                            $msg = $err['error']['message'] ?? 'Unknown API error';
+                            $log_fn("[STREAM API ERROR] model=$stream_model action=$stream_action error=$msg");
+                            echo "data: " . json_encode(['type' => 'error', 'message' => $msg]) . "\n\n";
+                            flush();
+                            return strlen($data);
+                        }
+                    }
+                }
                 $stream_buffer .= $data;
                 $lines = explode("\n", $stream_buffer);
                 // Keep the last (possibly incomplete) line in the buffer
@@ -906,6 +997,7 @@ class lifeprisma_ai extends rcube_plugin
                             }
                         } elseif ($type === 'error') {
                             $msg = $event['error']['message'] ?? 'Unknown error';
+                            $log_fn("[STREAM API ERROR] anthropic model=$stream_model error=$msg");
                             echo "data: " . json_encode(['type' => 'error', 'message' => $msg]) . "\n\n";
                             flush();
                         }
@@ -947,6 +1039,7 @@ class lifeprisma_ai extends rcube_plugin
                             flush();
                         } elseif ($type === 'error') {
                             $msg = $event['message'] ?? 'Unknown error';
+                            $log_fn("[STREAM API ERROR] responses model=$stream_model error=$msg");
                             echo "data: " . json_encode(['type' => 'error', 'message' => $msg]) . "\n\n";
                             flush();
                         }
@@ -958,9 +1051,14 @@ class lifeprisma_ai extends rcube_plugin
 
         curl_exec($ch);
 
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         if (curl_error($ch)) {
-            echo "data: " . json_encode(['type' => 'error', 'message' => curl_error($ch)]) . "\n\n";
+            $err = curl_error($ch);
+            $this->ai_log("[STREAM ERROR] curl_error=$err http=$http_code model=$model");
+            echo "data: " . json_encode(['type' => 'error', 'message' => $err]) . "\n\n";
             flush();
+        } elseif ($http_code !== 200) {
+            $this->ai_log("[STREAM ERROR] http=$http_code model=$model action=$action");
         }
 
         curl_close($ch);
@@ -1084,14 +1182,23 @@ class lifeprisma_ai extends rcube_plugin
                 'input' => $user_prompt,
                 'max_output_tokens' => $max_tokens,
             ];
+            $unsupported = $this->get_unsupported_params($provider, $model);
             if ($supports_reasoning) {
-                $payload['reasoning'] = ['effort' => $reasoning];
-                $payload['text'] = ['verbosity' => $verbosity];
+                $effort = $reasoning;
                 if ($reasoning === 'none') {
+                    $effort = in_array('reasoning_none', $unsupported) ? 'minimal' : 'none';
+                }
+                if ($effort !== 'none') {
+                    $payload['reasoning'] = ['effort' => $effort];
+                    if ($reasoning !== 'none') {
+                        $payload['text'] = ['verbosity' => $verbosity];
+                    }
+                }
+            }
+            if (!in_array('temperature', $unsupported)) {
+                if (!isset($payload['reasoning']) || !$supports_reasoning) {
                     $payload['temperature'] = $temperature;
                 }
-            } else {
-                $payload['temperature'] = $temperature;
             }
         }
 
@@ -1102,6 +1209,8 @@ class lifeprisma_ai extends rcube_plugin
         } elseif (!empty($api_key)) {
             $curl_headers[] = 'Authorization: Bearer ' . $api_key;
         }
+
+        $this->ai_log("[REQUEST] action=$action model=$model provider=$provider_id api_type=$api_type user=" . ($rcmail->user->get_username() ?? 'unknown'));
 
         $ch = curl_init($api_url);
         curl_setopt_array($ch, [
@@ -1119,6 +1228,7 @@ class lifeprisma_ai extends rcube_plugin
         curl_close($ch);
 
         if ($error) {
+            $this->ai_log("[REQUEST ERROR] curl_error=$error model=$model action=$action");
             echo json_encode(['status' => 'error', 'message' => 'Connection failed: ' . $error]);
             exit;
         }
@@ -1127,6 +1237,7 @@ class lifeprisma_ai extends rcube_plugin
 
         if ($http_code !== 200) {
             $msg = $data['error']['message'] ?? 'API error (HTTP ' . $http_code . ')';
+            $this->ai_log("[REQUEST ERROR] http=$http_code model=$model action=$action error=$msg");
             echo json_encode(['status' => 'error', 'message' => $msg]);
             exit;
         }
@@ -1159,12 +1270,17 @@ class lifeprisma_ai extends rcube_plugin
             exit;
         }
 
+        if ($action === 'detect_followup') {
+            $this->ai_log("[EMAIL ANALYSIS] model=$model result=" . substr(trim($content), 0, 500));
+        }
+
         $usage = $data['usage'] ?? [];
         $input_tokens = $usage['input_tokens'] ?? $usage['prompt_tokens'] ?? 0;
         $output_tokens = $usage['output_tokens'] ?? $usage['completion_tokens'] ?? 0;
         echo json_encode([
             'status' => 'success',
             'result' => trim($content),
+            'model' => $model,
             'tokens' => [
                 'input' => $input_tokens,
                 'output' => $output_tokens,
@@ -1206,12 +1322,31 @@ class lifeprisma_ai extends rcube_plugin
                 }
             }
 
+            // Extract spam score from Rspamd headers
+            $spam_score = null;
+            $spam_header = $msg->headers->others['x-spam-status'] ?? '';
+            if (is_array($spam_header)) $spam_header = end($spam_header);
+            if ($spam_header && preg_match('/\bscore=(-?[0-9.]+)/i', $spam_header, $m)) {
+                $spam_score = (float) $m[1];
+            }
+            // Fallback: X-Spamd-Bar (+ = positive, - = negative)
+            if ($spam_score === null) {
+                $bar = $msg->headers->others['x-spamd-bar'] ?? '';
+                if (is_array($bar)) $bar = end($bar);
+                if ($bar) {
+                    $plus = substr_count($bar, '+');
+                    $minus = substr_count($bar, '-');
+                    $spam_score = $plus > 0 ? (float) $plus : -1.0 * $minus;
+                }
+            }
+
             return [
                 'subject' => $msg->headers->subject ?? '',
                 'from' => $msg->headers->from ?? '',
                 'to' => $msg->headers->to ?? '',
                 'date' => $msg->headers->date ?? '',
                 'body' => trim($body),
+                'spam_score' => $spam_score,
             ];
         } catch (\Exception $e) {
             return [];
@@ -1322,10 +1457,17 @@ class lifeprisma_ai extends rcube_plugin
         }
 
         if ($action === 'detect_followup') {
-            return "You are an email analyst. Analyze this email to determine if it requires a follow-up response from the reader. " .
+            return "You are an email security and productivity analyst. Analyze this email for three things: " .
+                "1) SPAM: Is this unsolicited bulk/marketing email? " .
+                "2) SCAM: Is this a phishing, fraud, or social engineering attempt? " .
+                "3) FOLLOW-UP: Does the reader need to respond or take action? " .
                 "Return ONLY a JSON object (no code block): " .
-                "{\"needs_followup\": true/false, \"urgency\": \"high/medium/low/none\", \"reason\": \"brief reason\", \"suggested_action\": \"brief suggestion\", \"deadline\": \"date or null\"}. " .
-                "Look for: direct questions, action requests, promises to respond, meeting proposals, deadlines, pending decisions. " .
+                "{\"is_spam\": true/false, \"is_scam\": true/false, \"scam_reason\": \"brief reason or null\", " .
+                "\"needs_followup\": true/false, \"urgency\": \"high/medium/low/none\", \"reason\": \"brief reason\", " .
+                "\"suggested_action\": \"brief suggestion\", \"deadline\": \"date or null\"}. " .
+                "For follow-up, look for: direct questions, action requests, promises to respond, meeting proposals, deadlines, pending decisions. " .
+                "For scam, look for: suspicious links, urgency pressure, impersonation, too-good-to-be-true offers, credential requests. " .
+                "For spam, look for: bulk marketing, newsletters the user didn't opt into, unsolicited promotions. " .
                 "Return ONLY the JSON, nothing else.";
         }
 
