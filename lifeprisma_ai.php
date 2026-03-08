@@ -61,7 +61,7 @@ class lifeprisma_ai extends rcube_plugin
             // Pass admin status to JS
             $rcmail->output->set_env('lpai_is_admin', $this->is_admin());
 
-            // Pass attachment info for compose view
+            // Pass attachment info and message context for read view
             if ($args['template'] === 'message') {
                 $uid = rcube_utils::get_input_string('_uid', rcube_utils::INPUT_GET);
                 $mbox = rcube_utils::get_input_string('_mbox', rcube_utils::INPUT_GET);
@@ -70,8 +70,20 @@ class lifeprisma_ai extends rcube_plugin
                     if ($attachments) {
                         $rcmail->output->set_env('lpai_attachments', $attachments);
                     }
+                    // Pass message context for follow-up detection
+                    $ctx = $this->fetch_message_context((int) $uid, $mbox);
+                    if ($ctx) {
+                        $rcmail->output->set_env('lpai_msg_context', [
+                            'from' => $ctx['from'] ?? '',
+                            'date' => $ctx['date'] ?? '',
+                            'subject' => $ctx['subject'] ?? '',
+                        ]);
+                    }
                 }
             }
+
+            // Pass smart compose preference
+            $rcmail->output->set_env('lpai_smart_compose', $prefs['genia_smart_compose'] ?? 1);
 
             $rcmail->output->add_footer($this->get_ai_panel_html($js_providers));
         }
@@ -305,6 +317,7 @@ class lifeprisma_ai extends rcube_plugin
         foreach ($tones as $k => $v) $tone_select->add($v, $k);
 
         $draft_checkbox = new html_checkbox(['name' => '_genia_auto_draft', 'id' => 'genia_auto_draft', 'value' => 1]);
+        $smart_compose_checkbox = new html_checkbox(['name' => '_genia_smart_compose', 'id' => 'genia_smart_compose', 'value' => 1]);
 
         $args['blocks']['genia_general'] = [
             'name' => 'General Settings',
@@ -320,6 +333,10 @@ class lifeprisma_ai extends rcube_plugin
                 'genia_auto_draft' => [
                     'title' => 'Auto-save AI content as draft',
                     'content' => $draft_checkbox->show($prefs['genia_auto_draft'] ?? 0),
+                ],
+                'genia_smart_compose' => [
+                    'title' => 'Smart Compose (AI autocomplete while typing)',
+                    'content' => $smart_compose_checkbox->show($prefs['genia_smart_compose'] ?? 1),
                 ],
             ],
         ];
@@ -338,6 +355,7 @@ class lifeprisma_ai extends rcube_plugin
         $args['prefs']['genia_language'] = rcube_utils::get_input_string('_genia_language', rcube_utils::INPUT_POST);
         $args['prefs']['genia_tone'] = rcube_utils::get_input_string('_genia_tone', rcube_utils::INPUT_POST);
         $args['prefs']['genia_auto_draft'] = rcube_utils::get_input_string('_genia_auto_draft', rcube_utils::INPUT_POST) ? 1 : 0;
+        $args['prefs']['genia_smart_compose'] = rcube_utils::get_input_string('_genia_smart_compose', rcube_utils::INPUT_POST) ? 1 : 0;
 
         return $args;
     }
@@ -368,6 +386,7 @@ class lifeprisma_ai extends rcube_plugin
         $rcmail = rcmail::get_instance();
         $admins = $rcmail->config->get('lifeprisma_ai_admins', []);
         if (empty($admins)) return false;
+        if (empty($rcmail->user)) return false;
         $identity = $rcmail->user->get_identity();
         $email = $identity['email'] ?? '';
         $username = $rcmail->user->get_username();
@@ -1281,6 +1300,35 @@ class lifeprisma_ai extends rcube_plugin
                 "Format as a structured list. Use markdown formatting with bold for names.";
         }
 
+        if ($action === 'autocomplete') {
+            return "You are an email autocomplete engine. The user is composing an email and paused typing. " .
+                "Complete the current sentence or thought naturally. Rules:\n" .
+                "1. Return ONLY the completion text (the part that comes AFTER what the user typed).\n" .
+                "2. Keep it short — one sentence or at most two.\n" .
+                "3. Match the tone and language of what's already written.\n" .
+                "4. Be natural and contextually appropriate.\n" .
+                "5. Do NOT repeat what the user already typed.\n" .
+                "6. Do NOT add greetings or closings unless the user clearly started one.\n" .
+                "7. If the text seems complete, return an empty string.";
+        }
+
+        if ($action === 'suggest_send_time') {
+            return "You are an email timing expert. Based on the recipient information and email context, " .
+                "suggest the best time to send this email for maximum engagement. " .
+                "Return ONLY a JSON object (no code block): " .
+                "{\"suggestion\": \"brief one-line suggestion\", \"time\": \"HH:MM\", \"day\": \"today/tomorrow/weekday\", \"reason\": \"brief reason\"}. " .
+                "Consider business hours, timezone hints from the email domain, and email urgency. " .
+                "Return ONLY the JSON, nothing else.";
+        }
+
+        if ($action === 'detect_followup') {
+            return "You are an email analyst. Analyze this email to determine if it requires a follow-up response from the reader. " .
+                "Return ONLY a JSON object (no code block): " .
+                "{\"needs_followup\": true/false, \"urgency\": \"high/medium/low/none\", \"reason\": \"brief reason\", \"suggested_action\": \"brief suggestion\", \"deadline\": \"date or null\"}. " .
+                "Look for: direct questions, action requests, promises to respond, meeting proposals, deadlines, pending decisions. " .
+                "Return ONLY the JSON, nothing else.";
+        }
+
         if ($action === 'detect_tone') {
             return "You are an expert at analyzing email tone and sentiment. " .
                 "Analyze the tone of the email and respond with a JSON object (no code block): " .
@@ -1427,6 +1475,31 @@ class lifeprisma_ai extends rcube_plugin
                 $prompt = "Extract all contact information from this email";
                 if (!empty($subject)) $prompt .= " (Subject: {$subject})";
                 $prompt .= ".\nRespond in {$language}.\n\n{$text}";
+                return $prompt;
+
+            case 'autocomplete':
+                $lines = explode("\n", $email_body);
+                $last_lines = array_slice($lines, -5);
+                $context = implode("\n", $last_lines);
+                $prompt = "Complete this email text naturally";
+                if (!empty($subject)) $prompt .= " (Subject: {$subject})";
+                if (!empty($language)) $prompt .= " in {$language}";
+                $prompt .= ":\n\n{$context}";
+                return $prompt;
+
+            case 'suggest_send_time':
+                $prompt = "Suggest the best time to send this email.\n";
+                if (!empty($subject)) $prompt .= "Subject: {$subject}\n";
+                $prompt .= "Recipients: " . ($instruction ?: 'unknown') . "\n";
+                if (!empty($email_body)) $prompt .= "Email preview: " . substr($email_body, 0, 300) . "\n";
+                return $prompt;
+
+            case 'detect_followup':
+                $text = $reply_text ?: $email_body;
+                $prompt = "Analyze if this email needs a follow-up response:\n\n";
+                if (!empty($original_sender)) $prompt .= "From: {$original_sender}\n";
+                if (!empty($subject)) $prompt .= "Subject: {$subject}\n\n";
+                $prompt .= $text;
                 return $prompt;
 
             case 'detect_tone':

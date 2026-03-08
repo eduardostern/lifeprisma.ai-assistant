@@ -9,12 +9,15 @@ if (window.rcmail) {
 
         if (task === 'mail' && action === 'compose') {
             lpai_add_compose_button();
-            // Check if we should auto-open GenIA reply panel
             lpai_check_pending_reply();
+            lpai_init_smart_compose();
+            lpai_init_send_time();
         }
 
         if (task === 'mail' && (action === 'show' || action === 'preview')) {
             lpai_add_message_button();
+            // Delayed follow-up detection (don't slow down page load)
+            setTimeout(function() { lpai_init_followup_detection(); }, 1000);
         }
 
         if (task === 'settings') {
@@ -2266,3 +2269,444 @@ function lpai_render_admin(root, data, urlSave, token) {
 
 // Make admin init globally available
 window.lpai_init_admin = lpai_init_admin;
+
+// ========================================
+// Smart Compose — AI Autocomplete (#1)
+// ========================================
+var lpai_sc_timer = null;
+var lpai_sc_controller = null;
+var lpai_sc_suggestion = '';
+var lpai_sc_ghost = null;
+var lpai_sc_active = false;
+var lpai_sc_delay = 1500; // ms pause before triggering
+
+function lpai_init_smart_compose() {
+    if (!rcmail.env.lpai_smart_compose) return;
+    var providers = rcmail.env.lpai_providers || {};
+    if (Object.keys(providers).length === 0) return;
+
+    // Wait for TinyMCE to be ready
+    var attempts = 0;
+    var waitInterval = setInterval(function() {
+        attempts++;
+        var editor = window.tinyMCE && tinyMCE.activeEditor;
+        if (editor && editor.getBody()) {
+            clearInterval(waitInterval);
+            lpai_attach_smart_compose(editor);
+        }
+        if (attempts > 50) clearInterval(waitInterval);
+    }, 200);
+}
+
+function lpai_attach_smart_compose(editor) {
+    // Create ghost overlay element
+    lpai_sc_ghost = document.createElement('span');
+    lpai_sc_ghost.id = 'lpai-sc-ghost';
+    lpai_sc_ghost.style.cssText = 'color:#adb5bd;pointer-events:none;font-style:italic;';
+    lpai_sc_ghost.contentEditable = 'false';
+
+    editor.on('keyup', function(e) {
+        // Ignore Tab, Enter, Shift, Ctrl, Alt, arrows, etc.
+        if ([9, 13, 16, 17, 18, 27, 37, 38, 39, 40].indexOf(e.keyCode) >= 0) return;
+
+        lpai_sc_dismiss();
+
+        if (lpai_sc_timer) clearTimeout(lpai_sc_timer);
+        lpai_sc_timer = setTimeout(function() {
+            lpai_sc_request(editor);
+        }, lpai_sc_delay);
+    });
+
+    editor.on('keydown', function(e) {
+        // Tab to accept suggestion
+        if (e.keyCode === 9 && lpai_sc_active && lpai_sc_suggestion) {
+            e.preventDefault();
+            e.stopPropagation();
+            lpai_sc_accept(editor);
+            return false;
+        }
+        // Escape to dismiss
+        if (e.keyCode === 27 && lpai_sc_active) {
+            lpai_sc_dismiss();
+        }
+    });
+
+    // Dismiss on click
+    editor.on('click', function() {
+        lpai_sc_dismiss();
+    });
+}
+
+function lpai_sc_request(editor) {
+    lpai_init_provider();
+
+    var text = editor.getContent({ format: 'text' });
+    if (!text || text.trim().length < 10) return;
+
+    // Don't autocomplete if text ends with a period/complete sentence feel + newline
+    var trimmed = text.trimEnd();
+    if (!trimmed || trimmed.length < 5) return;
+
+    if (lpai_sc_controller) lpai_sc_controller.abort();
+    lpai_sc_controller = new AbortController();
+
+    var postData = {
+        _action: 'plugin.lifeprisma_ai_request',
+        ai_action: 'autocomplete',
+        instruction: '',
+        email_body: text,
+        reply_text: '',
+        subject: lpai_get_subject(),
+        language: lpai_options.language,
+        tone: lpai_options.tone,
+        sender_name: lpai_get_sender_name(),
+        reasoning: 'none',
+        verbosity: 'low',
+        provider: lpai_options.provider,
+        model: lpai_options.model,
+        history: '[]',
+        msg_uid: '',
+        mbox: '',
+        view_context: 'compose',
+        _token: rcmail.env.request_token
+    };
+
+    var encoded = [];
+    for (var key in postData) {
+        encoded.push(encodeURIComponent(key) + '=' + encodeURIComponent(postData[key]));
+    }
+
+    fetch(rcmail.url('plugin.lifeprisma_ai_request'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: encoded.join('&'),
+        signal: lpai_sc_controller.signal
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        lpai_sc_controller = null;
+        if (data.status === 'success' && data.result) {
+            var suggestion = data.result.trim();
+            if (suggestion && suggestion.length > 2) {
+                lpai_sc_show(editor, suggestion);
+            }
+        }
+    }).catch(function(err) {
+        lpai_sc_controller = null;
+    });
+}
+
+function lpai_sc_show(editor, suggestion) {
+    lpai_sc_dismiss();
+    lpai_sc_suggestion = suggestion;
+    lpai_sc_active = true;
+
+    // Insert ghost text at cursor position
+    var body = editor.getBody();
+    if (!body) return;
+
+    var ghost = editor.getDoc().createElement('span');
+    ghost.id = 'lpai-sc-ghost';
+    ghost.style.cssText = 'color:#adb5bd;pointer-events:none;font-style:italic;';
+    ghost.contentEditable = false;
+    ghost.setAttribute('data-mce-bogus', '1');
+    ghost.textContent = suggestion;
+
+    // Insert at cursor
+    var sel = editor.selection;
+    if (sel) {
+        sel.collapse(false);
+        sel.getRng().insertNode(ghost);
+        // Keep cursor before the ghost
+        var rng = editor.getDoc().createRange();
+        rng.setStartBefore(ghost);
+        rng.collapse(true);
+        sel.setRng(rng);
+    }
+
+    // Show hint
+    lpai_sc_show_hint();
+}
+
+function lpai_sc_show_hint() {
+    var existing = document.getElementById('lpai-sc-hint');
+    if (existing) existing.remove();
+
+    var hint = document.createElement('div');
+    hint.id = 'lpai-sc-hint';
+    hint.className = 'lpai-sc-hint';
+    hint.innerHTML = '<kbd>Tab</kbd> to accept &middot; <kbd>Esc</kbd> to dismiss';
+
+    var bar = document.getElementById('lpai-qa-bar-compose');
+    if (bar) {
+        bar.parentNode.insertBefore(hint, bar.nextSibling);
+    }
+}
+
+function lpai_sc_accept(editor) {
+    if (!lpai_sc_suggestion || !lpai_sc_active) return;
+
+    // Remove ghost and insert real text
+    var ghost = editor.getDoc().getElementById('lpai-sc-ghost');
+    if (ghost) {
+        var textNode = editor.getDoc().createTextNode(lpai_sc_suggestion);
+        ghost.parentNode.replaceChild(textNode, ghost);
+        // Place cursor at end of inserted text
+        var rng = editor.getDoc().createRange();
+        rng.setStartAfter(textNode);
+        rng.collapse(true);
+        editor.selection.setRng(rng);
+    }
+
+    lpai_sc_suggestion = '';
+    lpai_sc_active = false;
+    var hint = document.getElementById('lpai-sc-hint');
+    if (hint) hint.remove();
+}
+
+function lpai_sc_dismiss() {
+    lpai_sc_suggestion = '';
+    lpai_sc_active = false;
+
+    if (lpai_sc_controller) {
+        lpai_sc_controller.abort();
+        lpai_sc_controller = null;
+    }
+    if (lpai_sc_timer) {
+        clearTimeout(lpai_sc_timer);
+        lpai_sc_timer = null;
+    }
+
+    // Remove ghost from TinyMCE
+    var editor = window.tinyMCE && tinyMCE.activeEditor;
+    if (editor) {
+        var ghost = editor.getDoc().getElementById('lpai-sc-ghost');
+        if (ghost) ghost.remove();
+    }
+
+    var hint = document.getElementById('lpai-sc-hint');
+    if (hint) hint.remove();
+}
+
+// ========================================
+// Send Time Suggestion (#2)
+// ========================================
+function lpai_init_send_time() {
+    var providers = rcmail.env.lpai_providers || {};
+    if (Object.keys(providers).length === 0) return;
+
+    var bar = document.getElementById('lpai-qa-bar-compose');
+    if (!bar) return;
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lpai-qa-btn';
+    btn.id = 'lpai-send-time-btn';
+    btn.innerHTML = '&#128337; Best Time';
+    btn.title = 'Suggest best time to send';
+    btn.onclick = function() { lpai_suggest_send_time(btn); };
+    bar.appendChild(btn);
+}
+
+function lpai_suggest_send_time(clickedBtn) {
+    lpai_init_provider();
+
+    var editorContent = lpai_get_editor_content();
+    if (!editorContent.trim()) {
+        if (rcmail.display_message) rcmail.display_message('Write something first', 'notice');
+        return;
+    }
+
+    // Get recipients
+    var toField = document.getElementById('_to') || document.querySelector('input[name="_to"]');
+    var recipients = toField ? toField.value : '';
+
+    var origLabel = clickedBtn.innerHTML;
+    clickedBtn.disabled = true;
+    clickedBtn.innerHTML = '&#9203; Analyzing...';
+
+    var postData = {
+        _action: 'plugin.lifeprisma_ai_request',
+        ai_action: 'suggest_send_time',
+        instruction: recipients,
+        email_body: editorContent,
+        reply_text: '',
+        subject: lpai_get_subject(),
+        language: lpai_options.language,
+        tone: lpai_options.tone,
+        sender_name: lpai_get_sender_name(),
+        reasoning: 'none',
+        verbosity: 'low',
+        provider: lpai_options.provider,
+        model: lpai_options.model,
+        history: '[]',
+        msg_uid: '',
+        mbox: '',
+        view_context: 'compose',
+        _token: rcmail.env.request_token
+    };
+
+    var encoded = [];
+    for (var key in postData) {
+        encoded.push(encodeURIComponent(key) + '=' + encodeURIComponent(postData[key]));
+    }
+
+    fetch(rcmail.url('plugin.lifeprisma_ai_request'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: encoded.join('&')
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        clickedBtn.disabled = false;
+        clickedBtn.innerHTML = origLabel;
+
+        if (data.status === 'success' && data.result) {
+            try {
+                var info = JSON.parse(data.result.replace(/```json\n?|\n?```/g, '').trim());
+                lpai_show_send_time_badge(info);
+            } catch (e) {
+                // If not JSON, show as text
+                lpai_show_send_time_badge({ suggestion: data.result });
+            }
+        }
+    }).catch(function(err) {
+        clickedBtn.disabled = false;
+        clickedBtn.innerHTML = origLabel;
+    });
+}
+
+function lpai_show_send_time_badge(info) {
+    var existing = document.getElementById('lpai-send-time-badge');
+    if (existing) existing.remove();
+
+    var badge = document.createElement('div');
+    badge.id = 'lpai-send-time-badge';
+    badge.className = 'lpai-send-time-badge';
+
+    var text = info.suggestion || ('Send ' + (info.day || 'today') + ' at ' + (info.time || ''));
+    var reason = info.reason || '';
+
+    badge.innerHTML = '<div class="lpai-send-time-content">' +
+        '<span class="lpai-send-time-icon">&#128337;</span>' +
+        '<span class="lpai-send-time-text">' + text + '</span>' +
+        (reason ? '<span class="lpai-send-time-reason">' + reason + '</span>' : '') +
+        '</div>' +
+        '<button type="button" class="lpai-send-time-close" onclick="this.parentNode.remove()">&times;</button>';
+
+    var bar = document.getElementById('lpai-qa-bar-compose');
+    if (bar) {
+        bar.parentNode.insertBefore(badge, bar.nextSibling);
+    }
+}
+
+// ========================================
+// Follow-up Reminders (#3)
+// ========================================
+function lpai_init_followup_detection() {
+    var providers = rcmail.env.lpai_providers || {};
+    if (Object.keys(providers).length === 0) return;
+
+    var msgContext = rcmail.env.lpai_msg_context;
+    if (!msgContext) return;
+
+    // Get message body text
+    var msgPart = document.querySelector('#messagebody .message-part, #messagebody .message-htmlpart, #messagebody');
+    if (!msgPart) return;
+
+    var bodyText = msgPart.innerText || msgPart.textContent || '';
+    if (bodyText.trim().length < 20) return;
+
+    // Quick client-side pre-check: look for common follow-up indicators
+    var indicators = [
+        /\bplease\s+(reply|respond|confirm|let\s+me\s+know|get\s+back)/i,
+        /\b(can\s+you|could\s+you|would\s+you|will\s+you)\b/i,
+        /\b(by\s+(monday|tuesday|wednesday|thursday|friday|tomorrow|end\s+of|eod|eow|cop))/i,
+        /\b(deadline|urgente?|asap|as\s+soon\s+as)\b/i,
+        /\b(aguardo|responda|confirme|por\s+favor|preciso|urgente)\b/i,
+        /\?\s*$/m
+    ];
+
+    var hasIndicator = false;
+    for (var i = 0; i < indicators.length; i++) {
+        if (indicators[i].test(bodyText)) {
+            hasIndicator = true;
+            break;
+        }
+    }
+
+    if (!hasIndicator) return;
+
+    // Call AI to confirm and get details
+    lpai_init_provider();
+
+    var postData = {
+        _action: 'plugin.lifeprisma_ai_request',
+        ai_action: 'detect_followup',
+        instruction: '',
+        email_body: bodyText.substring(0, 2000),
+        reply_text: bodyText.substring(0, 2000),
+        subject: msgContext.subject || lpai_get_subject(),
+        language: lpai_options.language,
+        tone: 'professional',
+        sender_name: '',
+        reasoning: 'none',
+        verbosity: 'low',
+        provider: lpai_options.provider,
+        model: lpai_options.model,
+        history: '[]',
+        msg_uid: rcmail.env.uid || '',
+        mbox: rcmail.env.mailbox || '',
+        view_context: 'read',
+        _token: rcmail.env.request_token
+    };
+
+    var encoded = [];
+    for (var key in postData) {
+        encoded.push(encodeURIComponent(key) + '=' + encodeURIComponent(postData[key]));
+    }
+
+    fetch(rcmail.url('plugin.lifeprisma_ai_request'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: encoded.join('&')
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.status === 'success' && data.result) {
+            try {
+                var info = JSON.parse(data.result.replace(/```json\n?|\n?```/g, '').trim());
+                if (info.needs_followup) {
+                    lpai_show_followup_banner(info);
+                }
+            } catch (e) {}
+        }
+    }).catch(function() {});
+}
+
+function lpai_show_followup_banner(info) {
+    var existing = document.getElementById('lpai-followup-banner');
+    if (existing) existing.remove();
+
+    var urgencyClass = 'lpai-followup-' + (info.urgency || 'medium');
+    var urgencyIcon = info.urgency === 'high' ? '&#9888;' : info.urgency === 'low' ? '&#128172;' : '&#128276;';
+
+    var banner = document.createElement('div');
+    banner.id = 'lpai-followup-banner';
+    banner.className = 'lpai-followup-banner ' + urgencyClass;
+
+    var html = '<div class="lpai-followup-content">';
+    html += '<span class="lpai-followup-icon">' + urgencyIcon + '</span>';
+    html += '<div class="lpai-followup-info">';
+    html += '<strong>Follow-up needed</strong>';
+    if (info.reason) html += ' &mdash; ' + info.reason;
+    if (info.deadline) html += '<br><span class="lpai-followup-deadline">Deadline: ' + info.deadline + '</span>';
+    if (info.suggested_action) html += '<br><span class="lpai-followup-action">' + info.suggested_action + '</span>';
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="lpai-followup-actions">';
+    html += '<button type="button" class="lpai-qa-btn lpai-qa-reply" onclick="try{localStorage.setItem(\'lpai_pending_reply\',\'1\')}catch(e){}rcmail.command(\'reply\')">Reply Now</button>';
+    html += '<button type="button" class="lpai-followup-dismiss" onclick="this.parentNode.parentNode.remove()">Dismiss</button>';
+    html += '</div>';
+
+    banner.innerHTML = html;
+
+    var msgBody = document.getElementById('messagebody');
+    if (msgBody) {
+        msgBody.parentNode.insertBefore(banner, msgBody);
+    }
+}

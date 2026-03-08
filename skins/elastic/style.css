@@ -1257,6 +1257,213 @@ html.dark-mode .lpai-admin-key-missing,
 .dark-mode .lpai-admin-key-missing { background: #3b1111; color: #ef9a9a; }
 
 /* ============================
+   Smart Compose
+   ============================ */
+.lpai-sc-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    margin: 0 0 2px 0;
+    background: #f0f9ff;
+    border: 1px solid #b3e0ff;
+    border-radius: 0.25rem;
+    font-size: 12px;
+    color: #37beff;
+    animation: lpai-slide-up 0.2s ease;
+}
+
+.lpai-sc-hint kbd {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 11px;
+    font-family: inherit;
+    color: #2c363a;
+    box-shadow: 0 1px 0 #ddd;
+}
+
+html.dark-mode .lpai-sc-hint,
+.dark-mode .lpai-sc-hint {
+    background: #1a2e38;
+    border-color: #2a5070;
+    color: #37beff;
+}
+
+html.dark-mode .lpai-sc-hint kbd,
+.dark-mode .lpai-sc-hint kbd {
+    background: #21292c;
+    border-color: #4d6066;
+    color: #c5d1d3;
+    box-shadow: 0 1px 0 #4d6066;
+}
+
+/* ============================
+   Send Time Badge
+   ============================ */
+.lpai-send-time-badge {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    margin: 0 0 2px 0;
+    background: #f0f9ff;
+    border: 1px solid #b3e0ff;
+    border-radius: 0.25rem;
+    font-size: 13px;
+    animation: lpai-slide-up 0.25s ease;
+}
+
+.lpai-send-time-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+}
+
+.lpai-send-time-icon {
+    font-size: 18px;
+}
+
+.lpai-send-time-text {
+    font-weight: 600;
+    color: #2c363a;
+}
+
+.lpai-send-time-reason {
+    font-size: 12px;
+    color: #8b9fa7;
+    margin-left: 4px;
+}
+
+.lpai-send-time-close {
+    background: none;
+    border: none;
+    font-size: 18px;
+    color: #8b9fa7;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+
+.lpai-send-time-close:hover { color: #ff5552; }
+
+html.dark-mode .lpai-send-time-badge,
+.dark-mode .lpai-send-time-badge {
+    background: #1a2e38;
+    border-color: #2a5070;
+}
+
+html.dark-mode .lpai-send-time-text,
+.dark-mode .lpai-send-time-text { color: #c5d1d3; }
+
+/* ============================
+   Follow-up Banner
+   ============================ */
+.lpai-followup-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    margin: 6px 10px;
+    border-radius: 0.25rem;
+    font-size: 13px;
+    animation: lpai-slide-up 0.25s ease;
+    gap: 12px;
+}
+
+.lpai-followup-high {
+    background: #fde8e8;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+}
+
+.lpai-followup-medium {
+    background: #fff3cd;
+    border: 1px solid #ffeeba;
+    color: #856404;
+}
+
+.lpai-followup-low {
+    background: #e8f5e9;
+    border: 1px solid #c8e6c9;
+    color: #2e7d32;
+}
+
+.lpai-followup-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    flex: 1;
+}
+
+.lpai-followup-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.lpai-followup-info {
+    line-height: 1.5;
+}
+
+.lpai-followup-deadline {
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.lpai-followup-action {
+    font-size: 12px;
+    color: inherit;
+    opacity: 0.8;
+}
+
+.lpai-followup-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.lpai-followup-dismiss {
+    background: none;
+    border: 1px solid currentColor;
+    border-radius: 0.25rem;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    color: inherit;
+    opacity: 0.7;
+    transition: opacity 0.15s;
+    font-family: inherit;
+}
+
+.lpai-followup-dismiss:hover { opacity: 1; }
+
+/* Follow-up dark mode */
+html.dark-mode .lpai-followup-high,
+.dark-mode .lpai-followup-high {
+    background: #3b1111;
+    border-color: #c62828;
+    color: #ef9a9a;
+}
+
+html.dark-mode .lpai-followup-medium,
+.dark-mode .lpai-followup-medium {
+    background: #3d3200;
+    border-color: #665200;
+    color: #ffd452;
+}
+
+html.dark-mode .lpai-followup-low,
+.dark-mode .lpai-followup-low {
+    background: #1b3a1b;
+    border-color: #2e7d32;
+    color: #66bb6a;
+}
+
+/* ============================
    Mobile
    ============================ */
 @media (max-width: 600px) {
